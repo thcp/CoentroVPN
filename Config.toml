@@ -1,0 +1,25 @@
+mode = "server"
+server_addr = "127.0.0.1"
+listen_addr = "0.0.0.0"
+listen_port = 1194
+
+[logging]
+log_level = "debug"  # Possible values: "debug", "info", "error", etc.
+
+[compression]
+algorithm = "lz4"  # Possible values: "lz4", "zstd"
+
+[udp]
+mtu = 1500  # Maximum Transmission Unit (MTU), adjust based on network environment
+buffer_size = 8192  # Set default buffer size to 8KB (can be adjusted based on needs)
+rate_limit = 1000  # Rate limit in bytes per second, adjust based on your bandwidth requirements
+max_packet_size = 1400  # Safe packet size considering typical MTU and headers
+flow_control_threshold = 500  # Flow control threshold (in bytes) for congestion management
+recv_buffer_size = 1048576  # OS-level receive buffer size (in bytes)
+send_buffer_size = 1048576  # OS-level send buffer size (in bytes)
+
+[encryption]
+enabled = true  # Enable encryption (true/false)
+algorithm = "aes-gcm"  # Possible values: "aes-gcm"
+key_size = 256  # AES key size (options: 128, 192, 256)
+iv_size = 12  # Initialization vector size (for AES-GCM)
