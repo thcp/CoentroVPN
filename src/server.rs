@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use tokio::time::{sleep, Duration}; // For rate limiting
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
+use crate::packet_utils::{split_packet, reassemble_packets, frame_chunks, deframe_chunks}; // Updated import
 
 pub struct Server {
     pub config: Config,
@@ -77,7 +78,7 @@ impl Tunnel for Server {
             let chunks = if len <= max_size {
                 vec![buf[..len].to_vec()]
             } else {
-                self.split_packet(&buf[..len], max_size)
+                split_packet(&buf[..len], max_size)
             };
 
             let socket_clone = Arc::clone(&self.socket);
@@ -114,12 +115,11 @@ impl Tunnel for Server {
         let discovered_mtu = discover_path_mtu(mtu.into(), addr, enable_discovery);
         let max_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
-        if data.len() <= max_size {
-            socket.send_to(data, addr).await?;
-        } else {
-            for chunk in self.split_packet(data, max_size) {
-                socket.send_to(&chunk, addr).await?;
-            }
+        let msg_id: u32 = rand::random(); // Added random message ID
+        let chunks = frame_chunks(&data, max_size - 8, msg_id); // Updated to use frame_chunks
+
+        for chunk in chunks {
+            socket.send_to(&chunk, addr).await?;
         }
 
         Ok(())
@@ -129,19 +129,15 @@ impl Tunnel for Server {
         let socket = self.socket.lock().await;  // Lock the socket for receiving
         let mut buf = vec![0u8; 1024];
         let (size, _) = socket.recv_from(&mut buf).await?;
-        Ok(self.reassemble_packets(vec![buf[..size].to_vec()])) // Use reassemble_packets here
+
+        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated to use deframe_chunks
+            Some(data) => data,
+            None => return Err("Failed to reassemble packet".into()),
+        };
+
+        Ok(reassembled_data) // Use reassembled_data here
     }
 }
 
 impl Server {
-    fn split_packet(&self, data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
-        data.chunks(max_size)
-            .map(|chunk| chunk.to_vec())
-            .collect()
-    }
-
-    // Reassemble the packet chunks
-    fn reassemble_packets(&self, chunks: Vec<Vec<u8>>) -> Vec<u8> {
-        chunks.into_iter().flatten().collect()
-    }
 }

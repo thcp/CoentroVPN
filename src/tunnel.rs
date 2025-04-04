@@ -11,8 +11,11 @@ use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
 
 // Correct imports for LZ4 and Zstd compression
-use lz4::block::{compress as lz4_compress, CompressionMode};
-use zstd::stream::encode_all as zstd_compress;
+use lz4::block::{self, CompressionMode};
+use zstd::stream;
+use crate::packet_utils::{frame_chunks, deframe_chunks}; // Updated imports
+
+use rand::random; // Added import
 
 #[async_trait]
 pub trait Tunnel {
@@ -66,29 +69,29 @@ impl TunnelImpl {
     async fn compress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         match algorithm {
             "lz4" => {
-                // LZ4 compression with default mode (None) and no prepended size
-                let compressed_data = lz4_compress(data, Some(CompressionMode::default()), false)?;
+                let compressed_data = block::compress(data, Some(CompressionMode::default()), false)?;
                 Ok(compressed_data)
             }
             "zstd" => {
-                // Zstd compression with compression level 3
-                let compressed_data = zstd_compress(data, 3)?; // Compression level 3 for Zstd
+                let compressed_data = stream::encode_all(data, 3)?;
                 Ok(compressed_data)
             }
             _ => Err("Unsupported compression algorithm!".into()),
         }
     }
 
-    // Implement packet splitting logic
-    fn split_packet(data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
-        data.chunks(max_size)
-            .map(|chunk| chunk.to_vec())
-            .collect()
-    }
-
-    // Reassemble the split packets
-    fn reassemble_packets(chunks: Vec<Vec<u8>>) -> Vec<u8> {
-        chunks.into_iter().flatten().collect()
+    async fn decompress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        match algorithm {
+            "lz4" => {
+                let decompressed_data = block::decompress(data, None)?;
+                Ok(decompressed_data)
+            }
+            "zstd" => {
+                let decompressed_data = stream::decode_all(std::io::Cursor::new(data))?;
+                Ok(decompressed_data)
+            }
+            _ => Err("Unsupported compression algorithm!".into()),
+        }
     }
 }
 
@@ -158,8 +161,9 @@ impl Tunnel for TunnelImpl {
         // Compress data based on user selection
         let compressed_data = TunnelImpl::compress_data(data, &compression_algorithm).await?;
 
-        // Split data into chunks for better handling of large packets
-        let chunks = TunnelImpl::split_packet(&compressed_data, max_packet_size);
+        // Use frame_chunks to chunk the data
+        let msg_id: u32 = random();
+        let chunks = frame_chunks(&compressed_data, max_packet_size - 8, msg_id); // Updated line
 
         // Send each chunk
         for chunk in chunks {
@@ -174,15 +178,17 @@ impl Tunnel for TunnelImpl {
         let mut buf = vec![0u8; self.config.udp.buffer_size.unwrap_or(1024)]; // Use dynamic buffer size
         let (size, _) = socket.recv_from(&mut buf).await?;
 
-        // Assuming the data is chunked, reassemble it before further processing
-        let chunks = TunnelImpl::split_packet(&buf[..size], self.config.udp.max_packet_size.unwrap_or(8192));
-        let reassembled_data = TunnelImpl::reassemble_packets(chunks);
+        // Use deframe_chunks to reassemble the data
+        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated line
+            Some(data) => data,
+            None => return Err("Failed to reassemble packet".into()),
+        };
 
         // Get the selected compression algorithm
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
 
         // Decompress received data based on user selection
-        let decompressed_data = TunnelImpl::compress_data(&reassembled_data, &compression_algorithm).await?;
+        let decompressed_data = TunnelImpl::decompress_data(&reassembled_data, &compression_algorithm).await?;
 
         Ok(decompressed_data)
     }
