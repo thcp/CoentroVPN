@@ -1,6 +1,6 @@
 use crate::tunnel::Tunnel;
 use crate::config::Config;
-use crate::net::calculate_max_payload_size;
+use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use async_trait::async_trait;
 use log::{info, error};
 use tokio::net::UdpSocket;
@@ -18,33 +18,45 @@ pub struct Server {
 
 #[async_trait]
 impl Tunnel for Server {
-    async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { // mutable self
+    async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = format!("{}:{}", self.config.listen_addr, self.config.listen_port);
         info!("Server listening on {}", addr);
 
-        let std_socket = StdUdpSocket::bind(&addr)?;
-        std_socket.set_nonblocking(true)?;
+        let std_socket = StdUdpSocket::bind(&addr)
+            .map_err(|e| format!("Failed to bind UDP socket on {}: {}", addr, e))?;
+        std_socket.set_nonblocking(true)
+            .map_err(|e| format!("Failed to set non-blocking mode on {}: {}", addr, e))?;
         let socket2 = Socket::from(std_socket);
 
-        if let Some(recv_buf) = self.config.recv_buffer_size {
+        if let Some(recv_buf) = self.config.udp.recv_buffer_size {
             socket2.set_recv_buffer_size(recv_buf)?;
             info!("Set receive buffer size to {}", recv_buf);
         }
 
-        if let Some(send_buf) = self.config.send_buffer_size {
+        if let Some(send_buf) = self.config.udp.send_buffer_size {
             socket2.set_send_buffer_size(send_buf)?;
             info!("Set send buffer size to {}", send_buf);
         }
 
         let std_socket = socket2.into();
-        let socket = UdpSocket::from_std(std_socket)?;
+        let socket = UdpSocket::from_std(std_socket)
+            .map_err(|e| format!("Failed to create Tokio UdpSocket: {}", e))?;
+        let socket = Arc::new(Mutex::new(socket));
+        self.socket = socket;
 
-        let socket = Arc::new(Mutex::new(socket));  
-        self.socket = socket; // Assign the socket to the struct field
+        // Perform MTU discovery once
+        let mtu = self.config.udp.mtu.unwrap_or(1500);
+        let enable_discovery = self.config.udp.enable_mtu_discovery.unwrap_or(false);
+        let discovered_mtu = discover_path_mtu(mtu.into(), addr.parse()?, enable_discovery);
+        let max_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
-        let mut buf = [0u8; 1500];  // Buffer to hold incoming data
+        info!(
+            "Server initialized with discovered MTU = {}, max_packet_size = {}",
+            discovered_mtu, max_size
+        );
+
+        let mut buf = [0u8; 1500];
         loop {
-            // Receive data from the client
             let (len, peer) = match self.socket.lock().await.recv_from(&mut buf).await {
                 Ok(res) => res,
                 Err(e) => {
@@ -55,23 +67,19 @@ impl Tunnel for Server {
 
             info!("Received {} bytes from {}", len, peer);
 
-            // Implement rate limiting: Get the rate limit from config
-            if let Some(rate_limit) = self.config.rate_limit {
+            if let Some(rate_limit) = self.config.udp.rate_limit {
                 let rate_limit_bytes = rate_limit as f64;
-
                 let sent_data = buf.len() as f64;
                 let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
-
-                // Sleep to respect the rate limit
                 sleep(sleep_duration).await;
             }
 
-            // Split the packet if it exceeds the maximum size
-            let mtu = self.config.mtu.unwrap_or(1500);
-            let max_size = self.config.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(mtu.into()));
-            let chunks = self.split_packet(&buf[..len], max_size); // Now using the split_packet method in Server
+            let chunks = if len <= max_size {
+                vec![buf[..len].to_vec()]
+            } else {
+                self.split_packet(&buf[..len], max_size)
+            };
 
-            // Spawn a new task for handling each packet chunk concurrently
             let socket_clone = Arc::clone(&self.socket);
             let peer_clone = peer.clone();
 
@@ -80,7 +88,6 @@ impl Tunnel for Server {
                 let chunk_clone = chunk.clone();
 
                 tokio::spawn(async move {
-                    // Lock the socket to send data back to the peer
                     let socket = socket_clone.lock().await;
                     if let Err(e) = socket.send_to(&chunk_clone, peer_clone).await {
                         error!("Failed to send data to {}: {}", peer_clone, e);
@@ -93,26 +100,26 @@ impl Tunnel for Server {
     }
 
     async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-        let socket = self.socket.lock().await;  // Lock the socket for sending
-        
-        // Apply rate limiting based on configuration
-        if let Some(rate_limit) = self.config.rate_limit {
-            let rate_limit_bytes = rate_limit as f64;
+        let socket = self.socket.lock().await;
 
+        if let Some(rate_limit) = self.config.udp.rate_limit {
+            let rate_limit_bytes = rate_limit as f64;
             let sent_data = data.len() as f64;
             let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
-
-            // Sleep to respect the rate limit
             sleep(sleep_duration).await;
         }
 
-        // Split the data if it exceeds the maximum size
-        let mtu = self.config.mtu.unwrap_or(1500);
-        let max_size = self.config.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(mtu.into()));
-        let chunks = self.split_packet(data, max_size);
+        let mtu = self.config.udp.mtu.unwrap_or(1500);
+        let enable_discovery = self.config.udp.enable_mtu_discovery.unwrap_or(false);
+        let discovered_mtu = discover_path_mtu(mtu.into(), addr, enable_discovery);
+        let max_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
-        for chunk in chunks {
-            socket.send_to(&chunk, addr).await?;
+        if data.len() <= max_size {
+            socket.send_to(data, addr).await?;
+        } else {
+            for chunk in self.split_packet(data, max_size) {
+                socket.send_to(&chunk, addr).await?;
+            }
         }
 
         Ok(())
