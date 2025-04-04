@@ -6,7 +6,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use log::{info, error};
 use crate::config::Config;
 use tokio::time::{sleep, Duration}; // For rate limiting
-use crate::net::calculate_max_payload_size; // Import for calculating max payload size
+use crate::net::{calculate_max_payload_size, discover_path_mtu}; // Import for calculating max payload size and discovering MTU
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
 
@@ -33,12 +33,12 @@ impl TunnelImpl {
         std_socket.set_nonblocking(true)?;
         let socket2 = Socket::from(std_socket);
 
-        if let Some(recv_buf) = config.recv_buffer_size {
+        if let Some(recv_buf) = config.udp.recv_buffer_size {
             socket2.set_recv_buffer_size(recv_buf)?;
             info!("Set receive buffer size to {}", recv_buf);
         }
 
-        if let Some(send_buf) = config.send_buffer_size {
+        if let Some(send_buf) = config.udp.send_buffer_size {
             socket2.set_send_buffer_size(send_buf)?;
             info!("Set send buffer size to {}", send_buf);
         }
@@ -63,19 +63,19 @@ impl TunnelImpl {
     }
 
     // Correctly updated compress_data function
-    async fn compress_data(data: &[u8], algorithm: &str) -> Vec<u8> {
+    async fn compress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         match algorithm {
             "lz4" => {
                 // LZ4 compression with default mode (None) and no prepended size
-                let compressed_data = lz4_compress(data, Some(CompressionMode::default()), false).unwrap();
-                compressed_data
+                let compressed_data = lz4_compress(data, Some(CompressionMode::default()), false)?;
+                Ok(compressed_data)
             }
             "zstd" => {
                 // Zstd compression with compression level 3
-                let compressed_data = zstd_compress(data, 3).unwrap(); // Compression level 3 for Zstd
-                compressed_data
+                let compressed_data = zstd_compress(data, 3)?; // Compression level 3 for Zstd
+                Ok(compressed_data)
             }
-            _ => panic!("Unsupported compression algorithm!"),
+            _ => Err("Unsupported compression algorithm!".into()),
         }
     }
 
@@ -101,7 +101,7 @@ impl Tunnel for TunnelImpl {
         let server_addr: SocketAddr = self.config.server_addr.to_socket_addrs()?.next().ok_or("Invalid server address")?;
 
         // Set the buffer size based on the configuration
-        let buffer_size: usize = self.config.buffer_size.unwrap_or(8192);  // Use buffer_size from config or default to 8192 bytes
+        let buffer_size: usize = self.config.udp.buffer_size.unwrap_or(8192);  // Use buffer_size from config or default to 8192 bytes
 
         // Apply buffer size to the socket (for both receive and send)
         let socket = self.socket.clone();  // Clone the Arc pointer for concurrency
@@ -135,7 +135,7 @@ impl Tunnel for TunnelImpl {
         let socket = self.socket.read().await;  // Lock the socket for sending
         
         // Apply rate limiting based on configuration
-        if let Some(rate_limit) = self.config.rate_limit {
+        if let Some(rate_limit) = self.config.udp.rate_limit {
             let rate_limit_bytes = rate_limit as f64;
 
             let sent_data = data.len() as f64;
@@ -145,16 +145,18 @@ impl Tunnel for TunnelImpl {
             sleep(sleep_duration).await;
         }
 
-        // Calculate safe max_payload_size using MTU
-        let mtu = self.config.mtu.unwrap_or(1500);
-        let max_packet_size = self.config.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(mtu.into()));
+        // Discover path MTU
+        let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
+        let enable_discovery = self.config.udp.enable_mtu_discovery.unwrap_or(false);
+        let discovered_mtu = discover_path_mtu(configured_mtu.into(), addr, enable_discovery);
+        let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu.into()));
         info!("Using max_packet_size: {}", max_packet_size);
 
         // Get the selected compression algorithm
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
 
         // Compress data based on user selection
-        let compressed_data = TunnelImpl::compress_data(data, &compression_algorithm).await;
+        let compressed_data = TunnelImpl::compress_data(data, &compression_algorithm).await?;
 
         // Split data into chunks for better handling of large packets
         let chunks = TunnelImpl::split_packet(&compressed_data, max_packet_size);
@@ -169,18 +171,18 @@ impl Tunnel for TunnelImpl {
 
     async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let socket = self.socket.read().await;  // Lock the socket for receiving
-        let mut buf = vec![0u8; self.config.buffer_size.unwrap_or(1024)]; // Use dynamic buffer size
+        let mut buf = vec![0u8; self.config.udp.buffer_size.unwrap_or(1024)]; // Use dynamic buffer size
         let (size, _) = socket.recv_from(&mut buf).await?;
 
         // Assuming the data is chunked, reassemble it before further processing
-        let chunks = TunnelImpl::split_packet(&buf[..size], self.config.max_packet_size.unwrap_or(8192));
+        let chunks = TunnelImpl::split_packet(&buf[..size], self.config.udp.max_packet_size.unwrap_or(8192));
         let reassembled_data = TunnelImpl::reassemble_packets(chunks);
 
         // Get the selected compression algorithm
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
 
         // Decompress received data based on user selection
-        let decompressed_data = TunnelImpl::compress_data(&reassembled_data, &compression_algorithm).await;
+        let decompressed_data = TunnelImpl::compress_data(&reassembled_data, &compression_algorithm).await?;
 
         Ok(decompressed_data)
     }
