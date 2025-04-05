@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::fs;
 use std::env;
+use tracing::{info, error, warn};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LoggingConfig {
@@ -38,8 +39,15 @@ pub struct Config {
 
 impl Config {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
-        let contents = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&contents)?;
+        info!("Loading config from {}", path);
+        let contents = fs::read_to_string(path).map_err(|e| {
+            error!("Failed to load config from {}: {}", path, e);
+            e
+        })?;
+        let config: Config = toml::from_str(&contents).map_err(|e| {
+            error!("Failed to parse config from {}: {}", path, e);
+            e
+        })?;
         Ok(config)
     }
 
@@ -57,7 +65,13 @@ impl Config {
             config.listen_addr = listen_addr;
         }
         if let Ok(listen_port) = env::var("LISTEN_PORT") {
-            config.listen_port = listen_port.parse().unwrap_or(config.listen_port);
+            config.listen_port = match listen_port.parse() {
+                Ok(port) => port,
+                Err(_) => {
+                    warn!("Invalid LISTEN_PORT '{}', falling back to {}", listen_port, config.listen_port);
+                    config.listen_port
+                }
+            };
         }
         if let Ok(log_level) = env::var("LOG_LEVEL") {
             config.logging.log_level = log_level;

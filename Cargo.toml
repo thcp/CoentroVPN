@@ -2,7 +2,11 @@
 name = "coentrovpn"
 version = "0.1.0"
 edition = "2021"
+[features]
+default = []
+pretty-logs = []
 [dependencies]
+itertools = "0.14.0" # Add itertools crate
 rand = "0.9.0"
 thiserror = "2.0.12"
 nix = "0.29"
@@ -11,7 +15,8 @@ lz4 = "1.24.0"
 zstd = "0.13.3"
 num_cpus = {version = "1.13"}
 tokio-console = "0.1.13"
-tokio = { version = "1.44.1", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
+uuid = { version = "1.8", features = ["v4"] }
 async-trait = "0.1"
 log = "0.4"
 env_logger = "0.11.8"
@@ -21,3 +26,5 @@ clap = { version = "4.5.35", features = ["derive"] }
 toml = "0.8"
 futures = "0.3"   # For async operations
 tokio-util = "0.7"  # For async utilities
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

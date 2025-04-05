@@ -4,7 +4,7 @@ listen_addr = "0.0.0.0"
 listen_port = 1194
 
 [logging]
-log_level = "debug"  # Possible values: "debug", "info", "error", etc.
+log_level = "info"  # Possible values: "debug", "info", "error", etc.
 
 [compression]
 algorithm = "lz4"  # Possible values: "lz4", "zstd"

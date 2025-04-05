@@ -1,5 +1,6 @@
 use clap::Parser;
-use log::{info, debug};
+use tracing::{info, debug}; // Updated import
+use uuid::Uuid;
 use std::env;
 use num_cpus;  // Import the num_cpus crate
 use tokio::runtime::Builder;  // Import Builder to manually create the runtime
@@ -10,6 +11,7 @@ use coentrovpn::config::Config;
 use coentrovpn::client::Client;
 use coentrovpn::server::Server;
 use coentrovpn::tunnel::Tunnel;
+use coentrovpn::logging::init_logging; // Updated import
 
 
 #[derive(Parser, Debug)]
@@ -40,10 +42,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
         let config = Config::from_env_or_file(&cli.config)?;
         info!("Config loaded: {:?}", config);
 
-        // Check environment variable `LOG_LEVEL` first
-        let log_level = match env::var("LOG_LEVEL") {
-            Ok(val) => val.to_lowercase(),
-            Err(_) => config.logging.log_level.to_lowercase(),  // Fall back to Config.toml
+        // Check environment variable `LOG_LEVEL` first, then fallback to Config.toml
+        let log_level = if let Ok(val) = env::var("LOG_LEVEL") {
+            val.to_lowercase()
+        } else {
+            config.logging.log_level.to_lowercase()
         };
 
         // Ensure a valid log level is set
@@ -54,13 +57,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             _ => "info",  // Default to info if invalid value found
         };
 
-        // Set RUST_LOG environment variable for logging
-        env::set_var("RUST_LOG", log_level);
+        // Only set RUST_LOG if it's not already set
+        if env::var("RUST_LOG").is_err() {
+            env::set_var("RUST_LOG", &log_level);
+        }
         
         // Debug log to verify the log level
+
+        init_logging(&log_level); // Replaced env_logger::init() with init_logging()
         debug!("Log level set to: {}", log_level);
-        debug!("RUST_LOG is set to: {}", env::var("RUST_LOG").unwrap_or_else(|_| "not set".to_string()));
-        env_logger::init();
+        debug!("RUST_LOG is set to: {}", env::var("RUST_LOG").unwrap_or_else(|_| "not set".to_string()));        
 
         // Create a UDP socket and wrap it in an Arc<Mutex>
         let socket = UdpSocket::bind("0.0.0.0:0").await?;  // Bind to a random available port
@@ -69,12 +75,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
         // Instantiate Client or Server based on mode
         match config.mode.as_str() {
             "server" => {
-                let mut server: Server = Server { config, socket: Arc::clone(&socket) }; // Declare server as mutable
+                let mut server: Server = Server {
+                    config,
+                    socket: Arc::clone(&socket),
+                    session_id: Uuid::new_v4(),
+                }; // Declare server as mutable
                 server.start().await?;  // Now we can call start() on a mutable reference
             }
             "client" => {
                 let server_addr = config.server_addr.parse()?;
-                let mut client: Client = Client { config, socket: Arc::clone(&socket), server_addr };
+                let mut client: Client = Client {
+                    config,
+                    socket: Arc::clone(&socket),
+                    server_addr,
+                    session_id: Uuid::new_v4(),
+                };
                 client.start().await?;  // Now we can call start() on a mutable reference
             }
             _ => {

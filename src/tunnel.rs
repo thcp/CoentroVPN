@@ -1,21 +1,30 @@
-use async_trait::async_trait;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
 use std::net::SocketAddr;
-use log::{info, error};
+use tracing::{info, error, debug, trace, info_span}; // Updated to use structured logging
 use crate::config::Config;
 use tokio::time::{sleep, Duration}; // For rate limiting
 use crate::net::{calculate_max_payload_size, discover_path_mtu}; // Import for calculating max payload size and discovering MTU
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
-
-// Correct imports for LZ4 and Zstd compression
+use uuid::Uuid;
 use lz4::block::{self, CompressionMode};
 use zstd::stream;
-use crate::packet_utils::{frame_chunks, deframe_chunks}; // Updated imports
+use crate::packet_utils::frame_chunks;
+use rand::random;
+use crate::context::{Direction, ChunkContext, MessageContext, MessageType}; // Added MessageContext and MessageType
+use async_trait::async_trait;
+use std::collections::HashMap; // New import
+use itertools::Itertools; // Import for sorting
 
-use rand::random; // Added import
+#[derive(Debug, Clone)]
+pub struct Chunk {
+    pub message_id: u64,
+    pub chunk_id: u32,
+    pub total_chunks: Option<u32>,
+    pub payload: Vec<u8>,
+}
 
 #[async_trait]
 pub trait Tunnel {
@@ -28,6 +37,8 @@ pub trait Tunnel {
 pub struct TunnelImpl {
     pub config: Config,
     pub socket: Arc<RwLock<UdpSocket>>,  // Wrap socket in Arc<RwLock> to allow read concurrency
+    pub session_id: Uuid, // Added session_id
+    pub assembly_map: Arc<RwLock<HashMap<u64, Vec<Chunk>>>>, // New field
 }
 
 impl TunnelImpl {
@@ -52,12 +63,20 @@ impl TunnelImpl {
         Ok(TunnelImpl { 
             config, 
             socket: Arc::new(RwLock::new(socket)),  // Wrap in Arc<RwLock> for concurrency
+            session_id: Uuid::new_v4(), // Initialize session_id
+            assembly_map: Arc::new(RwLock::new(HashMap::new())), // Initialize assembly_map
         })
     }
 
     async fn handle_connection(&self, data: Vec<u8>, addr: SocketAddr) {
-        // Process received data
-        info!("Received data from {}: {:?}", addr, data);
+        let span = info_span!(
+            "handle_connection",
+            session_id = %self.session_id,
+            peer = %addr,
+            size = data.len()
+        );
+        let _enter = span.enter();
+        info!("Handling incoming connection");
 
         // Simulate some processing
         if let Err(e) = self.send_data(&data, addr).await {
@@ -107,11 +126,14 @@ pub async fn decompress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Bo
 #[async_trait]
 impl Tunnel for TunnelImpl {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { 
+        debug!(session_id = %self.session_id, "Tunnel session started");
+
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32); // Channel for sending data
 
         // Convert server_addr from String to SocketAddr
         let mut addrs = tokio::net::lookup_host(self.config.server_addr.clone()).await?;
         let server_addr = addrs.next().ok_or("Invalid server address")?;
+        info!("Starting tunnel with server address: {}", server_addr);
 
         // Set the buffer size based on the configuration
         let buffer_size: usize = self.config.udp.buffer_size.unwrap_or(8192);  // Use buffer_size from config or default to 8192 bytes
@@ -120,10 +142,16 @@ impl Tunnel for TunnelImpl {
         let socket = self.socket.clone();  // Clone the Arc pointer for concurrency
         tokio::spawn(async move {
             loop {
+                let socket = socket.read().await;
                 let mut buf = vec![0u8; buffer_size]; // Dynamic buffer size
-                match socket.read().await.recv_from(&mut buf).await {
+                match socket.recv_from(&mut buf).await {
                     Ok((size, src)) => {
-                        info!("Received data from {}", src);
+                        trace!(
+                            session_id = %Uuid::new_v4(),
+                            size = size,
+                            from = %src,
+                            "Received UDP packet"
+                        );
                         let data = buf[..size].to_vec();
                         if let Err(e) = tx.send(data).await {
                             error!("Failed to send data to channel: {}", e);
@@ -147,12 +175,37 @@ impl Tunnel for TunnelImpl {
     async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.read().await;  // Lock the socket for sending
         
+        let msg_id: u32 = random();
+        let msg_ctx = MessageContext {
+            message_id: msg_id as u64,
+            session_id: self.session_id,
+            size: data.len(),
+            message_type: MessageType::Data,
+        };
+
+        let span = info_span!(
+            "message_send",
+            message_id = msg_ctx.message_id,
+            session_id = %msg_ctx.session_id,
+            message_type = %msg_ctx.message_type,
+            size = msg_ctx.size
+        );
+        let _enter = span.enter();
+
         // Apply rate limiting based on configuration
         if let Some(rate_limit) = self.config.udp.rate_limit {
             let rate_limit_bytes = rate_limit as f64;
 
             let sent_data = data.len() as f64;
             let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
+            if sleep_duration > Duration::ZERO {
+                trace!(
+                    message_id = msg_ctx.message_id,
+                    session_id = %msg_ctx.session_id,
+                    delay_ms = sleep_duration.as_millis(),
+                    "Rate limiting delay before sending"
+                );
+            }
 
             // Sleep to respect the rate limit
             sleep(sleep_duration).await;
@@ -163,20 +216,41 @@ impl Tunnel for TunnelImpl {
         let enable_discovery = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), addr, enable_discovery);
         let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu.into()));
-        info!("Using max_packet_size: {}", max_packet_size);
+        info!("Using max_packet_size: {}", max_packet_size); // Moved line
 
         // Get the selected compression algorithm
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
-
+        trace!("Compressing data with algorithm: {}", compression_algorithm);
         // Compress data based on user selection
         let compressed_data = compress_data(&data, &compression_algorithm).await?;
+        let chunks = frame_chunks(&compressed_data, max_packet_size - 8, msg_id);
+        let total_chunks = chunks.len() as u32;
 
-        // Use frame_chunks to chunk the data
-        let msg_id: u32 = random();
-        let chunks = frame_chunks(&compressed_data, max_packet_size - 8, msg_id); // Updated line
+        debug!(
+            message_id = msg_id,
+            total_chunks,
+            compressed_size = compressed_data.len(),
+            "Prepared message for sending"
+        );
 
         // Send each chunk
-        for chunk in chunks {
+        for (chunk_id, chunk) in chunks.into_iter().enumerate() {
+            let ctx = ChunkContext {
+                message_id: msg_id as u64,
+                chunk_id: chunk_id as u32,
+                total_chunks: Some(total_chunks),
+                direction: Direction::Outbound,
+            };
+
+            trace!(
+                message_id = ctx.message_id,
+                chunk_id = ctx.chunk_id,
+                total_chunks = ?ctx.total_chunks,
+                size = chunk.len(),
+                direction = %ctx.direction,
+                "Sending chunk"
+            );
+
             socket.send_to(&chunk, addr).await?;
         }
 
@@ -188,17 +262,78 @@ impl Tunnel for TunnelImpl {
         let mut buf = vec![0u8; self.config.udp.buffer_size.unwrap_or(1024)]; // Use dynamic buffer size
         let (size, _) = socket.recv_from(&mut buf).await?;
 
-        // Use deframe_chunks to reassemble the data
-        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated line
-            Some(data) => data,
-            None => return Err("Failed to reassemble packet".into()),
+        let raw_chunk = buf[..size].to_vec();
+        let chunk = Chunk {
+            message_id: 0, // TODO: parse actual ID from header
+            chunk_id: 0,
+            total_chunks: Some(1),
+            payload: raw_chunk,
         };
+
+        trace!(
+            message_id = chunk.message_id,
+            chunk_id = chunk.chunk_id,
+            total_chunks = ?chunk.total_chunks,
+            size = chunk.payload.len(),
+            direction = %Direction::Inbound,
+            "Received and registered chunk"
+        );
+
+        let mut assembly = self.assembly_map.write().await;
+        let entry = assembly.entry(chunk.message_id).or_default();
+        entry.push(chunk);
+
+        let chunks = entry.clone(); // Clone so we can check completeness
+        let complete = match chunks.first().and_then(|c| c.total_chunks) {
+            Some(expected) => chunks.len() as u32 == expected,
+            None => false,
+        };
+
+        if !complete {
+            trace!(message_id = chunks[0].message_id, "Waiting for more chunks...");
+            return Err("Incomplete message, waiting for more chunks.".into());
+        }
+
+        assembly.remove(&chunks[0].message_id); // Clean up after complete
+
+        let reassembled_data: Vec<u8> = chunks
+            .iter()
+            .sorted_by_key(|c| c.chunk_id)
+            .flat_map(|c| c.payload.clone())
+            .collect();
+
+        let message_id = chunks.get(0).map(|chunk| chunk.message_id).unwrap_or(0);
+        let msg_ctx = MessageContext {
+            message_id,
+            session_id: self.session_id,
+            size: reassembled_data.len(),
+            message_type: MessageType::Data,
+        };
+
+        let span = info_span!(
+            "message_receive",
+            session_id = %msg_ctx.session_id,
+            message_type = %msg_ctx.message_type,
+            size = msg_ctx.size
+        );
+        let _enter = span.enter();
 
         // Get the selected compression algorithm
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
 
         // Decompress received data based on user selection
         let decompressed_data = decompress_data(&reassembled_data, &compression_algorithm).await?;
+
+        debug!(
+            size = decompressed_data.len(),
+            "Successfully decoded message"
+        );
+
+        trace!(
+            direction = %Direction::Inbound,
+            size = decompressed_data.len(),
+            "Decompressed payload"
+        );
 
         Ok(decompressed_data)
     }
