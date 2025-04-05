@@ -24,7 +24,7 @@
 - ✅ Integrated LZ4 and Zstd compression (using `spawn_blocking`)
 
 ---
-## 06/03 – Initial Scaffolding & Core Setup / Error Handling and Code Polish
+## 16/03 – Initial Scaffolding & Core Setup / Error Handling and Code Polishm
 - ✅ Project initialized with modular Rust structure
 - ✅ `Tunnel` trait defined with `start`, `send_data`, and `receive_data`
 - ✅ `Client`, `Server`, and `TunnelImpl` skeletons created
