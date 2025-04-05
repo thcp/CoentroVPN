@@ -3,19 +3,18 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
 use std::net::SocketAddr;
-use log::{info, error};
+use tracing::{info, error, debug, trace}; // Updated to use structured logging
 use crate::config::Config;
 use tokio::time::{sleep, Duration}; // For rate limiting
 use crate::net::{calculate_max_payload_size, discover_path_mtu}; // Import for calculating max payload size and discovering MTU
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
-
-// Correct imports for LZ4 and Zstd compression
+use uuid::Uuid;
 use lz4::block::{self, CompressionMode};
 use zstd::stream;
-use crate::packet_utils::{frame_chunks, deframe_chunks}; // Updated imports
-
-use rand::random; // Added import
+use crate::packet_utils::{frame_chunks, deframe_chunks};
+use rand::random;
+use crate::context::{Direction, ChunkContext};
 
 #[async_trait]
 pub trait Tunnel {
@@ -28,6 +27,7 @@ pub trait Tunnel {
 pub struct TunnelImpl {
     pub config: Config,
     pub socket: Arc<RwLock<UdpSocket>>,  // Wrap socket in Arc<RwLock> to allow read concurrency
+    pub session_id: Uuid, // Added session_id
 }
 
 impl TunnelImpl {
@@ -52,6 +52,7 @@ impl TunnelImpl {
         Ok(TunnelImpl { 
             config, 
             socket: Arc::new(RwLock::new(socket)),  // Wrap in Arc<RwLock> for concurrency
+            session_id: Uuid::new_v4(), // Initialize session_id
         })
     }
 
@@ -107,11 +108,14 @@ pub async fn decompress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Bo
 #[async_trait]
 impl Tunnel for TunnelImpl {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { 
+        debug!(session_id = %self.session_id, "Tunnel session started");
+
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32); // Channel for sending data
 
         // Convert server_addr from String to SocketAddr
         let mut addrs = tokio::net::lookup_host(self.config.server_addr.clone()).await?;
         let server_addr = addrs.next().ok_or("Invalid server address")?;
+        info!("Starting tunnel with server address: {}", server_addr);
 
         // Set the buffer size based on the configuration
         let buffer_size: usize = self.config.udp.buffer_size.unwrap_or(8192);  // Use buffer_size from config or default to 8192 bytes
@@ -167,16 +171,41 @@ impl Tunnel for TunnelImpl {
 
         // Get the selected compression algorithm
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
-
+        trace!("Compressing data with algorithm: {}", compression_algorithm);
+        let msg_id: u32 = random();
         // Compress data based on user selection
         let compressed_data = compress_data(&data, &compression_algorithm).await?;
+        let chunk_preview = frame_chunks(&compressed_data, max_packet_size - 8, msg_id);
+        let total_chunks = chunk_preview.len() as u32;
+
+        debug!(
+            message_id = msg_id,
+            total_chunks,
+            compressed_size = compressed_data.len(),
+            "Prepared message for sending"
+        );
 
         // Use frame_chunks to chunk the data
-        let msg_id: u32 = random();
         let chunks = frame_chunks(&compressed_data, max_packet_size - 8, msg_id); // Updated line
 
         // Send each chunk
-        for chunk in chunks {
+        for (chunk_id, chunk) in chunks.into_iter().enumerate() {
+            let ctx = ChunkContext {
+                message_id: msg_id as u64,
+                chunk_id: chunk_id as u32,
+                total_chunks: Some(total_chunks),
+                direction: Direction::Outbound,
+            };
+
+            trace!(
+                message_id = ctx.message_id,
+                chunk_id = ctx.chunk_id,
+                total_chunks = ?ctx.total_chunks,
+                direction = %ctx.direction,
+                size = chunk.len(),
+                "Sending chunk"
+            );
+
             socket.send_to(&chunk, addr).await?;
         }
 
@@ -199,6 +228,17 @@ impl Tunnel for TunnelImpl {
 
         // Decompress received data based on user selection
         let decompressed_data = decompress_data(&reassembled_data, &compression_algorithm).await?;
+
+        debug!(
+            size = decompressed_data.len(),
+            "Successfully received and reassembled message"
+        );
+
+        trace!(
+            direction = %Direction::Inbound,
+            size = decompressed_data.len(),
+            "Received and decompressed message"
+        );
 
         Ok(decompressed_data)
     }

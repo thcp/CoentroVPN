@@ -2,7 +2,7 @@ use crate::tunnel::Tunnel;
 use crate::config::Config;
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use async_trait::async_trait;
-use log::{info, error};
+use tracing::{info, error, debug, trace}; // Updated to use structured logging
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use std::sync::Arc;
@@ -11,15 +11,21 @@ use tokio::time::{sleep, Duration}; // For rate limiting
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
 use crate::packet_utils::{split_packet, frame_chunks, deframe_chunks};
+use crate::context::{Direction, ChunkContext}; // Added imports
+use uuid::Uuid; // Add this at the top
 
 pub struct Server {
     pub config: Config,
-    pub socket: Arc<Mutex<UdpSocket>>, // Add socket as a field
+    pub socket: Arc<Mutex<UdpSocket>>,
+    pub session_id: Uuid, // Updated struct
 }
 
 #[async_trait]
 impl Tunnel for Server {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.session_id = Uuid::new_v4(); // Inserted line
+        debug!(session_id = %self.session_id, "New server session started");
+
         let addr = format!("{}:{}", self.config.listen_addr, self.config.listen_port);
         info!("Server listening on {}", addr);
 
@@ -67,11 +73,16 @@ impl Tunnel for Server {
             };
 
             info!("Received {} bytes from {}", len, peer);
+            trace!("Processing packet: {:?}", &buf[..len]);
 
             if let Some(rate_limit) = self.config.udp.rate_limit {
                 let rate_limit_bytes = rate_limit as f64;
                 let sent_data = buf.len() as f64;
-                let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
+                let sleep_duration = if rate_limit_bytes > 0.0 {
+                    Duration::from_secs_f64(sent_data / rate_limit_bytes)
+                } else {
+                    Duration::from_secs(0)
+                };
                 sleep(sleep_duration).await;
             }
 
@@ -106,7 +117,11 @@ impl Tunnel for Server {
         if let Some(rate_limit) = self.config.udp.rate_limit {
             let rate_limit_bytes = rate_limit as f64;
             let sent_data = data.len() as f64;
-            let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
+            let sleep_duration = if rate_limit_bytes > 0.0 {
+                Duration::from_secs_f64(sent_data / rate_limit_bytes)
+            } else {
+                Duration::from_secs(0)
+            };
             sleep(sleep_duration).await;
         }
 
@@ -116,9 +131,33 @@ impl Tunnel for Server {
         let max_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
         let msg_id: u32 = rand::random(); // Added random message ID
-        let chunks = frame_chunks(&data, max_size - 8, msg_id); // Updated to use frame_chunks
+        let chunk_preview = frame_chunks(&data, max_size - 8, msg_id);
+        let total_chunks = chunk_preview.len() as u32;
 
-        for chunk in chunks {
+        debug!(
+            message_id = msg_id,
+            total_chunks,
+            compressed_size = data.len(),
+            "Prepared message for sending"
+        );
+
+        for (chunk_id, chunk) in chunk_preview.into_iter().enumerate() { // Updated for loop
+            let ctx = ChunkContext {
+                message_id: msg_id as u64,
+                chunk_id: chunk_id as u32,
+                total_chunks: Some(total_chunks),
+                direction: Direction::Outbound,
+            };
+
+            trace!( // Added tracing
+                message_id = ctx.message_id,
+                chunk_id = ctx.chunk_id,
+                total_chunks = ?ctx.total_chunks,
+                direction = %ctx.direction,
+                size = chunk.len(),
+                "Sending chunk"
+            );
+
             socket.send_to(&chunk, addr).await?;
         }
 
@@ -134,6 +173,17 @@ impl Tunnel for Server {
             Some(data) => data,
             None => return Err("Failed to reassemble packet".into()),
         };
+
+        trace!( // Added tracing
+            direction = %Direction::Inbound,
+            size = reassembled_data.len(),
+            "Received and decompressed message"
+        );
+
+        debug!( // Added debug logging
+            size = reassembled_data.len(),
+            "Successfully received and reassembled message"
+        );
 
         Ok(reassembled_data) // Use reassembled_data here
     }

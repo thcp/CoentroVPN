@@ -4,7 +4,7 @@ use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
 use async_trait::async_trait;
-use log::{info, error};
+use tracing::{info, error, warn, trace};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -88,12 +88,17 @@ impl Tunnel for Client {
                 let rate_limit_bytes = rate_limit as f64;
 
                 let sent_data = message.len() as f64;
-                let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
+                let sleep_duration = if rate_limit_bytes > 0.0 {
+                    Duration::from_secs_f64(sent_data / rate_limit_bytes)
+                } else {
+                    Duration::from_secs(0)
+                };
 
                 // Sleep to respect the rate limit
                 sleep(sleep_duration).await;
             }
 
+            trace!("Sending message to server: {}", String::from_utf8_lossy(message));
             if message.len() <= max_packet_size {
                 match socket.send_to(message, &client_clone.server_addr).await {
                     Ok(_) => {
@@ -140,7 +145,11 @@ impl Tunnel for Client {
             let rate_limit_bytes = rate_limit as f64;
 
             let sent_data = data.len() as f64;
-            let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
+            let sleep_duration = if rate_limit_bytes > 0.0 {
+                Duration::from_secs_f64(sent_data / rate_limit_bytes)
+            } else {
+                Duration::from_secs(0)
+            };
 
             // Sleep to respect the rate limit
             sleep(sleep_duration).await;
