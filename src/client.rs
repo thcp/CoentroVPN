@@ -11,6 +11,7 @@ use tokio::task;
 use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::time::{sleep, Duration}; // For rate limiting
+use crate::packet_utils::{frame_chunks, deframe_chunks}; // Updated import
 
 pub struct Client {
     pub config: Config,
@@ -126,7 +127,7 @@ impl Tunnel for Client {
     }
 
     // Implementing send_data with rate limiting and packet splitting
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), addr, enable);
@@ -150,7 +151,8 @@ impl Tunnel for Client {
             socket.send_to(data, addr).await?;
         } else {
             // Update MTU-based packet sizing
-            let chunks = self.split_packet(data, max_packet_size);
+            let msg_id: u32 = rand::random(); // Updated to generate message ID
+            let chunks = frame_chunks(data, max_packet_size - 8, msg_id); // Updated to frame chunks
 
             // Send each chunk
             for chunk in chunks {
@@ -162,41 +164,27 @@ impl Tunnel for Client {
     }
 
     // Implementing receive_data
-    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), self.server_addr, enable);
         let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
         let socket = self.socket.lock().await;  // Lock the socket for receiving
-        let mut buf = vec![0u8; 1024];  // Buffer for received data
+        let mut buf = vec![0u8; max_packet_size];  // Buffer for received data
         let (size, _) = socket.recv_from(&mut buf).await?;
 
+        // Sanity check for received data size
+        if size > max_packet_size {
+            return Err("Received packet exceeds max_packet_size".into());
+        }
+
         // Check if received data fits within max packet size
-        let chunks = if size <= max_packet_size {
-            vec![buf[..size].to_vec()]
-        } else {
-            // Update MTU-based packet sizing
-            self.split_packet(&buf[..size], max_packet_size)
+        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated to use deframe_chunks
+            Some(data) => data,
+            None => return Err("Failed to reassemble packet".into()),
         };
 
-        // Reassemble the chunks into a full packet
-        let reassembled_data = self.reassemble_packets(chunks);
-
         Ok(reassembled_data)
-    }
-}
-
-impl Client {
-    // Function to split large data into smaller chunks
-    fn split_packet(&self, data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
-        data.chunks(max_size)
-            .map(|chunk| chunk.to_vec())
-            .collect()
-    }
-
-    // Function to reassemble split packets into a complete packet
-    fn reassemble_packets(&self, chunks: Vec<Vec<u8>>) -> Vec<u8> {
-        chunks.into_iter().flatten().collect()
     }
 }
