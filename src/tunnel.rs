@@ -11,12 +11,14 @@ use std::net::UdpSocket as StdUdpSocket;
 use uuid::Uuid;
 use lz4::block::{self, CompressionMode};
 use zstd::stream;
-use crate::packet_utils::{frame_chunks, deframe_chunks};
+use crate::packet_utils::frame_chunks;
 use rand::random;
 use crate::context::{Direction, ChunkContext, MessageContext, MessageType}; // Added MessageContext and MessageType
 use async_trait::async_trait;
+use std::collections::HashMap; // New import
+use itertools::Itertools; // Import for sorting
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Chunk {
     pub message_id: u64,
     pub chunk_id: u32,
@@ -36,6 +38,7 @@ pub struct TunnelImpl {
     pub config: Config,
     pub socket: Arc<RwLock<UdpSocket>>,  // Wrap socket in Arc<RwLock> to allow read concurrency
     pub session_id: Uuid, // Added session_id
+    pub assembly_map: Arc<RwLock<HashMap<u64, Vec<Chunk>>>>, // New field
 }
 
 impl TunnelImpl {
@@ -61,6 +64,7 @@ impl TunnelImpl {
             config, 
             socket: Arc::new(RwLock::new(socket)),  // Wrap in Arc<RwLock> for concurrency
             session_id: Uuid::new_v4(), // Initialize session_id
+            assembly_map: Arc::new(RwLock::new(HashMap::new())), // Initialize assembly_map
         })
     }
 
@@ -240,24 +244,37 @@ impl Tunnel for TunnelImpl {
         let (size, _) = socket.recv_from(&mut buf).await?;
 
         let raw_chunk = buf[..size].to_vec();
-        let raw_chunks = match deframe_chunks(vec![raw_chunk]) {
-            Some(chunks) => chunks,
-            None => {
-                error!("Deframe failed for received packet, discarding");
-                return Err("Failed to reassemble packet".into());
-            }
+        let chunk = Chunk {
+            message_id: 0, // TODO: parse actual ID from header
+            chunk_id: 0,
+            total_chunks: Some(1),
+            payload: raw_chunk,
         };
 
-        let chunks: Vec<Chunk> = vec![Chunk {
-            message_id: 0, // TODO: parse from header
-            chunk_id: 0,
-            total_chunks: None,
-            payload: raw_chunks,
-        }];
+        let mut assembly = self.assembly_map.write().await;
+        let entry = assembly.entry(chunk.message_id).or_default();
+        entry.push(chunk);
+
+        let chunks = entry.clone(); // Clone so we can check completeness
+        let complete = match chunks.first().and_then(|c| c.total_chunks) {
+            Some(expected) => chunks.len() as u32 == expected,
+            None => false,
+        };
+
+        if !complete {
+            trace!(message_id = chunks[0].message_id, "Waiting for more chunks...");
+            return Err("Incomplete message, waiting for more chunks.".into());
+        }
+
+        assembly.remove(&chunks[0].message_id); // Clean up after complete
+
+        let reassembled_data: Vec<u8> = chunks
+            .iter()
+            .sorted_by_key(|c| c.chunk_id)
+            .flat_map(|c| c.payload.clone())
+            .collect();
 
         let message_id = chunks.get(0).map(|chunk| chunk.message_id).unwrap_or(0);
-        let reassembled_data: Vec<u8> = chunks.iter().flat_map(|c| c.payload.clone()).collect();
-
         let msg_ctx = MessageContext {
             message_id,
             session_id: self.session_id,
