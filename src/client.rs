@@ -127,7 +127,7 @@ impl Tunnel for Client {
     }
 
     // Implementing send_data with rate limiting and packet splitting
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), addr, enable);
@@ -164,7 +164,7 @@ impl Tunnel for Client {
     }
 
     // Implementing receive_data
-    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), self.server_addr, enable);

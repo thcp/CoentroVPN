@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use tokio::time::{sleep, Duration}; // For rate limiting
 use socket2::Socket;
 use std::net::UdpSocket as StdUdpSocket;
-use crate::packet_utils::{split_packet, reassemble_packets, frame_chunks, deframe_chunks}; // Updated import
+use crate::packet_utils::{split_packet, frame_chunks, deframe_chunks};
 
 pub struct Server {
     pub config: Config,
@@ -100,7 +100,7 @@ impl Tunnel for Server {
         }
     }
 
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.lock().await;
 
         if let Some(rate_limit) = self.config.udp.rate_limit {
@@ -125,7 +125,7 @@ impl Tunnel for Server {
         Ok(())
     }
 
-    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.lock().await;  // Lock the socket for receiving
         let mut buf = vec![0u8; 1024];
         let (size, _) = socket.recv_from(&mut buf).await?;

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use log::{info, error};
 use crate::config::Config;
 use tokio::time::{sleep, Duration}; // For rate limiting
@@ -20,8 +20,8 @@ use rand::random; // Added import
 #[async_trait]
 pub trait Tunnel {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;  // mutable self
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>>;
-    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
+    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone)]
@@ -31,7 +31,7 @@ pub struct TunnelImpl {
 }
 
 impl TunnelImpl {
-    pub fn new(config: Config, addr: SocketAddr) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(config: Config, addr: SocketAddr) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let std_socket = StdUdpSocket::bind(addr)?;
         std_socket.set_nonblocking(true)?;
         let socket2 = Socket::from(std_socket);
@@ -64,35 +64,44 @@ impl TunnelImpl {
             error!("Error sending data: {}", e);
         }
     }
+}
 
-    // Correctly updated compress_data function
-    async fn compress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        match algorithm {
+pub async fn compress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let data = data.to_vec();
+    let algorithm = algorithm.to_string(); // Clone the algorithm to ensure 'static lifetime
+    tokio::task::spawn_blocking(move || {
+        match algorithm.as_str() {
             "lz4" => {
-                let compressed_data = block::compress(data, Some(CompressionMode::default()), false)?;
+                let compressed_data = block::compress(&data, Some(CompressionMode::default()), false)?;
                 Ok(compressed_data)
             }
             "zstd" => {
-                let compressed_data = stream::encode_all(data, 3)?;
+                let compressed_data = stream::encode_all(std::io::Cursor::new(&data), 3)?;
                 Ok(compressed_data)
             }
             _ => Err("Unsupported compression algorithm!".into()),
         }
-    }
+    })
+    .await?
+}
 
-    async fn decompress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        match algorithm {
+pub async fn decompress_data(data: &[u8], algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let data = data.to_vec();
+    let algorithm = algorithm.to_string(); // Clone the algorithm to ensure 'static lifetime
+    tokio::task::spawn_blocking(move || {
+        match algorithm.as_str() {
             "lz4" => {
-                let decompressed_data = block::decompress(data, None)?;
+                let decompressed_data = block::decompress(&data, None)?;
                 Ok(decompressed_data)
             }
             "zstd" => {
-                let decompressed_data = stream::decode_all(std::io::Cursor::new(data))?;
+                let decompressed_data = stream::decode_all(std::io::Cursor::new(&data))?;
                 Ok(decompressed_data)
             }
             _ => Err("Unsupported compression algorithm!".into()),
         }
-    }
+    })
+    .await?
 }
 
 #[async_trait]
@@ -101,7 +110,8 @@ impl Tunnel for TunnelImpl {
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32); // Channel for sending data
 
         // Convert server_addr from String to SocketAddr
-        let server_addr: SocketAddr = self.config.server_addr.to_socket_addrs()?.next().ok_or("Invalid server address")?;
+        let mut addrs = tokio::net::lookup_host(self.config.server_addr.clone()).await?;
+        let server_addr = addrs.next().ok_or("Invalid server address")?;
 
         // Set the buffer size based on the configuration
         let buffer_size: usize = self.config.udp.buffer_size.unwrap_or(8192);  // Use buffer_size from config or default to 8192 bytes
@@ -111,7 +121,7 @@ impl Tunnel for TunnelImpl {
         tokio::spawn(async move {
             loop {
                 let mut buf = vec![0u8; buffer_size]; // Dynamic buffer size
-                match socket.write().await.recv_from(&mut buf).await {
+                match socket.read().await.recv_from(&mut buf).await {
                     Ok((size, src)) => {
                         info!("Received data from {}", src);
                         let data = buf[..size].to_vec();
@@ -134,7 +144,7 @@ impl Tunnel for TunnelImpl {
         Ok(())
     }
 
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.read().await;  // Lock the socket for sending
         
         // Apply rate limiting based on configuration
@@ -159,7 +169,7 @@ impl Tunnel for TunnelImpl {
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
 
         // Compress data based on user selection
-        let compressed_data = TunnelImpl::compress_data(data, &compression_algorithm).await?;
+        let compressed_data = compress_data(&data, &compression_algorithm).await?;
 
         // Use frame_chunks to chunk the data
         let msg_id: u32 = random();
@@ -173,7 +183,7 @@ impl Tunnel for TunnelImpl {
         Ok(())
     }
 
-    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.read().await;  // Lock the socket for receiving
         let mut buf = vec![0u8; self.config.udp.buffer_size.unwrap_or(1024)]; // Use dynamic buffer size
         let (size, _) = socket.recv_from(&mut buf).await?;
@@ -188,7 +198,7 @@ impl Tunnel for TunnelImpl {
         let compression_algorithm = self.config.compression.algorithm.clone();  // Retrieve compression algorithm
 
         // Decompress received data based on user selection
-        let decompressed_data = TunnelImpl::decompress_data(&reassembled_data, &compression_algorithm).await?;
+        let decompressed_data = decompress_data(&reassembled_data, &compression_algorithm).await?;
 
         Ok(decompressed_data)
     }

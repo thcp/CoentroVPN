@@ -83,3 +83,62 @@ pub fn deframe_chunks(packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
 
     Some(result)
 }
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+pub struct ReassemblyBuffer {
+    messages: HashMap<u32, MessageChunks>,
+    expiration: Duration,
+}
+
+struct MessageChunks {
+    parts: BTreeMap<u16, Vec<u8>>,
+    total_chunks: u16,
+    last_update: Instant,
+}
+
+impl ReassemblyBuffer {
+    pub fn new(expiration: Duration) -> Self {
+        Self {
+            messages: HashMap::new(),
+            expiration,
+        }
+    }
+
+    pub fn insert(&mut self, packet: Vec<u8>) -> Option<Vec<u8>> {
+        let (header, payload) = match PacketHeader::deserialize(&packet) {
+            Some(hp) => hp,
+            None => return None,
+        };
+
+        let msg = self.messages.entry(header.msg_id).or_insert_with(|| MessageChunks {
+            parts: BTreeMap::new(),
+            total_chunks: header.total_chunks,
+            last_update: Instant::now(),
+        });
+
+        msg.parts.insert(header.chunk_id, payload.to_vec());
+        msg.last_update = Instant::now();
+
+        if msg.parts.len() == msg.total_chunks as usize {
+            let mut full = Vec::new();
+            for i in 0..msg.total_chunks {
+                if let Some(chunk) = msg.parts.get(&i) {
+                    full.extend_from_slice(chunk);
+                } else {
+                    return None;
+                }
+            }
+            self.messages.remove(&header.msg_id);
+            return Some(full);
+        }
+
+        None
+    }
+
+    pub fn purge_expired(&mut self) {
+        let now = Instant::now();
+        self.messages.retain(|_, v| now.duration_since(v.last_update) < self.expiration);
+    }
+}
