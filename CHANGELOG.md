@@ -1,7 +1,11 @@
-
-
----
-# Changelog — CoentroVPN
+## 05/04 – Structured Logging and Chunk Context Integration
+- ✅ Introduced `Chunk` struct for per-chunk metadata (message_id, chunk_id, total_chunks)
+- ✅ Implemented `MessageContext` and `ChunkContext` for structured tracing
+- ✅ Added `info_span!`, `trace!`, and `debug!` across tunnel, client, and server flows
+- ✅ Traced rate-limiting events with delay duration per message
+- ✅ Added per-connection and per-chunk spans with consistent field ordering
+- ✅ Applied consistent log terminology (decoded, decompressed, etc.)
+- ✅ Removed legacy `deframe_chunks` and unified chunk handling
 
 ## 16/03 – Initial Scaffolding & Core Setup
 - ✅ Project initialized with modular Rust structure

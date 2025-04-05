@@ -32,7 +32,7 @@ The project began with a vision to build a modern, flexible VPN with a modular a
 
 | **Component / Feature**          | **Description**                                                                 | **Status**     | **Notes** |
 |----------------------------------|---------------------------------------------------------------------------------|----------------|-----------|
-| `tunnel.rs`                      | Core tunneling logic, concurrency, UDP socket optimization                      | ✅ Done        | Performance testing still pending |
+| `tunnel.rs`                      | Core tunneling logic, concurrency, UDP socket optimization                      | ✅ Done        | Full structured logging and chunk reassembly integrated |
 | `client.rs`                      | Client-side UDP handling, retry logic, integration with tunnel                  | ✅ Done        | Socket2 + MTU support complete |
 | `server.rs`                      | UDP listener, response logic, multi-client concurrency                          | ✅ Done        | Uses buffer and MTU tuning |
 | `config.rs`                      | Expose UDP-related config (MTU, buffer sizes, etc.)                             | ✅ Done        | TOML + env var overrides supported |
@@ -54,7 +54,7 @@ The project began with a vision to build a modern, flexible VPN with a modular a
 | Backpressure Signaling           | Server signals client to pause/resume based on buffer state                     | ❌ Not started | Planned but no signaling yet |
 | Key Exchange (e.g. DH)           | Secure key agreement between client and server                                  | ❌ Not started | Placeholder only |
 | Client Authentication            | Auth mechanism to allow only trusted clients                                    | ❌ Not started | Not yet implemented |
-| Metrics (latency, loss, etc.)    | Telemetry and monitoring of network performance                                 | ❌ Not started | No metrics layer yet |
+| Metrics (latency, loss, etc.)    | Telemetry and monitoring of network performance                                 | ❌ Not started | Logging framework integrated; metrics planned |
 | Health Checks                    | Liveness/readiness probes                                                       | ❌ Not started | No periodic health check implemented |
 | Horizontal Scaling               | Deploy server across multiple nodes/clusters                                    | ❌ Not started | Architecture not yet cluster-aware |
 | Sticky Sessions                  | Ensure session consistency across load-balanced instances                       | ❌ Not started | Would require session persistence logic |
