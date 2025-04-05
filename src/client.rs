@@ -12,11 +12,16 @@ use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::time::{sleep, Duration}; // For rate limiting
 use crate::packet_utils::{frame_chunks, deframe_chunks}; // Updated import
+use crate::context::{MessageContext, MessageType}; // Added import
+use tracing::info_span; // Added import
+use std::fmt; // Added import for Display implementation
+use uuid::Uuid; // Add near the top
 
 pub struct Client {
     pub config: Config,
-    pub socket: Arc<Mutex<UdpSocket>>,  // Add socket field to Client
+    pub socket: Arc<Mutex<UdpSocket>>,
     pub server_addr: SocketAddr,
+    pub session_id: Uuid, // Fix session_id to use Uuid
 }
 
 // Implement Clone for Client
@@ -26,6 +31,7 @@ impl Clone for Client {
             config: self.config.clone(),
             socket: Arc::clone(&self.socket),
             server_addr: self.server_addr,
+            session_id: self.session_id, // Clone session_id
         }
     }
 }
@@ -137,9 +143,28 @@ impl Tunnel for Client {
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), addr, enable);
         let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
+        
+        info!("Using max_packet_size: {}", max_packet_size); // Moved line
 
         let socket = self.socket.lock().await;  // Lock the socket for sending
         
+        let msg_id: u32 = rand::random(); // Updated to generate message ID
+        let msg_ctx = MessageContext {
+            message_id: msg_id as u64,
+            session_id: self.session_id,
+            size: data.len(),
+            message_type: MessageType::Data,
+        };
+
+        let span = info_span!(
+            "message_send",
+            message_id = msg_ctx.message_id,
+            session_id = %msg_ctx.session_id,
+            message_type = %msg_ctx.message_type,
+            size = msg_ctx.size
+        );
+        let _enter = span.enter();
+
         // Apply rate limiting based on configuration
         if let Some(rate_limit) = self.config.udp.rate_limit {
             let rate_limit_bytes = rate_limit as f64;
@@ -160,7 +185,6 @@ impl Tunnel for Client {
             socket.send_to(data, addr).await?;
         } else {
             // Update MTU-based packet sizing
-            let msg_id: u32 = rand::random(); // Updated to generate message ID
             let chunks = frame_chunks(data, max_packet_size - 8, msg_id); // Updated to frame chunks
 
             // Send each chunk
@@ -191,8 +215,26 @@ impl Tunnel for Client {
         // Check if received data fits within max packet size
         let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated to use deframe_chunks
             Some(data) => data,
-            None => return Err("Failed to reassemble packet".into()),
+            None => {
+                error!("Deframe failed for received packet, discarding");
+                return Err("Failed to reassemble packet".into());
+            }
         };
+
+        let msg_ctx = MessageContext {
+            message_id: 0, // TODO: parse actual message_id from chunk when available
+            session_id: self.session_id,
+            size: reassembled_data.len(),
+            message_type: MessageType::Data,
+        };
+
+        let span = info_span!(
+            "message_receive",
+            session_id = %msg_ctx.session_id,
+            message_type = %msg_ctx.message_type,
+            size = msg_ctx.size
+        );
+        let _enter = span.enter();
 
         Ok(reassembled_data)
     }

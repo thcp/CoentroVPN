@@ -84,7 +84,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             }
             "client" => {
                 let server_addr = config.server_addr.parse()?;
-                let mut client: Client = Client { config, socket: Arc::clone(&socket), server_addr };
+                let mut client: Client = Client {
+                    config,
+                    socket: Arc::clone(&socket),
+                    server_addr,
+                    session_id: Uuid::new_v4(),
+                };
                 client.start().await?;  // Now we can call start() on a mutable reference
             }
             _ => {
