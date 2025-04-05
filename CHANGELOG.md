@@ -24,16 +24,12 @@
 - ✅ Integrated LZ4 and Zstd compression (using `spawn_blocking`)
 
 ---
-## 16/03 – Initial Scaffolding & Core Setup
+## 06/03 – Initial Scaffolding & Core Setup / Error Handling and Code Polish
 - ✅ Project initialized with modular Rust structure
 - ✅ `Tunnel` trait defined with `start`, `send_data`, and `receive_data`
 - ✅ `Client`, `Server`, and `TunnelImpl` skeletons created
 - ✅ Config loader supporting both TOML and environment variables
 - ✅ Basic UDP socket binding via `tokio::net::UdpSocket`
-
----
-
-## 06/03 – Error Handling and Code Polish
 - ✅ Standardized all async function errors as `Box<dyn Error + Send + Sync>`
 - ✅ Replaced `to_socket_addrs` with async-safe `tokio::net::lookup_host`
 - ✅ Moved `compress_data`/`decompress_data` to shared module scope
