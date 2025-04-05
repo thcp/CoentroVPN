@@ -7,15 +7,15 @@
 - ✅ Applied consistent log terminology (decoded, decompressed, etc.)
 - ✅ Removed legacy `deframe_chunks` and unified chunk handling
 
-## 16/03 – Initial Scaffolding & Core Setup
-- ✅ Project initialized with modular Rust structure
-- ✅ `Tunnel` trait defined with `start`, `send_data`, and `receive_data`
-- ✅ `Client`, `Server`, and `TunnelImpl` skeletons created
-- ✅ Config loader supporting both TOML and environment variables
-- ✅ Basic UDP socket binding via `tokio::net::UdpSocket`
+---
+## 30/03 – Packet Reassembly and Rate Limiting
+- ✅ Introduced `ReassemblyBuffer` with timeout-based cleanup
+- ✅ Integrated reassembly into `receive_data` flow
+- ✅ Applied byte-rate throttling using `tokio::time::sleep` in `send_data`
+- ✅ Cleaned up unused imports and removed duplicate type definitions
+- ✅ Tuned buffer allocations to be MTU-aware and dynamic
 
 ---
-
 ## 23/03 – Framing, MTU Handling, and Compression
 - ✅ Introduced packet framing and chunking using `msg_id`, `chunk_id`, `total_chunks`
 - ✅ `frame_chunks` and `deframe_chunks` added to `packet_utils.rs`
@@ -24,13 +24,12 @@
 - ✅ Integrated LZ4 and Zstd compression (using `spawn_blocking`)
 
 ---
-
-## 30/03 – Packet Reassembly and Rate Limiting
-- ✅ Introduced `ReassemblyBuffer` with timeout-based cleanup
-- ✅ Integrated reassembly into `receive_data` flow
-- ✅ Applied byte-rate throttling using `tokio::time::sleep` in `send_data`
-- ✅ Cleaned up unused imports and removed duplicate type definitions
-- ✅ Tuned buffer allocations to be MTU-aware and dynamic
+## 16/03 – Initial Scaffolding & Core Setup
+- ✅ Project initialized with modular Rust structure
+- ✅ `Tunnel` trait defined with `start`, `send_data`, and `receive_data`
+- ✅ `Client`, `Server`, and `TunnelImpl` skeletons created
+- ✅ Config loader supporting both TOML and environment variables
+- ✅ Basic UDP socket binding via `tokio::net::UdpSocket`
 
 ---
 
