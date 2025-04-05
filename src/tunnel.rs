@@ -16,6 +16,14 @@ use rand::random;
 use crate::context::{Direction, ChunkContext, MessageContext, MessageType}; // Added MessageContext and MessageType
 use async_trait::async_trait;
 
+#[derive(Debug)]
+pub struct Chunk {
+    pub message_id: u64,
+    pub chunk_id: u32,
+    pub total_chunks: Option<u32>,
+    pub payload: Vec<u8>,
+}
+
 #[async_trait]
 pub trait Tunnel {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;  // mutable self
@@ -216,7 +224,7 @@ impl Tunnel for TunnelImpl {
                 chunk_id = ctx.chunk_id,
                 total_chunks = ?ctx.total_chunks,
                 size = chunk.len(),
-                direction = %ctx.direction, // Rearranged fields
+                direction = %ctx.direction,
                 "Sending chunk"
             );
 
@@ -231,17 +239,27 @@ impl Tunnel for TunnelImpl {
         let mut buf = vec![0u8; self.config.udp.buffer_size.unwrap_or(1024)]; // Use dynamic buffer size
         let (size, _) = socket.recv_from(&mut buf).await?;
 
-        // Use deframe_chunks to reassemble the data
-        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated line
-            Some(data) => data,
+        let raw_chunk = buf[..size].to_vec();
+        let raw_chunks = match deframe_chunks(vec![raw_chunk]) {
+            Some(chunks) => chunks,
             None => {
                 error!("Deframe failed for received packet, discarding");
                 return Err("Failed to reassemble packet".into());
             }
         };
 
+        let chunks: Vec<Chunk> = vec![Chunk {
+            message_id: 0, // TODO: parse from header
+            chunk_id: 0,
+            total_chunks: None,
+            payload: raw_chunks,
+        }];
+
+        let message_id = chunks.get(0).map(|chunk| chunk.message_id).unwrap_or(0);
+        let reassembled_data: Vec<u8> = chunks.iter().flat_map(|c| c.payload.clone()).collect();
+
         let msg_ctx = MessageContext {
-            message_id: 0, // TODO: parse actual message_id from chunk when available
+            message_id,
             session_id: self.session_id,
             size: reassembled_data.len(),
             message_type: MessageType::Data,
