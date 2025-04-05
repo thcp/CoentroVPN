@@ -1,6 +1,6 @@
 use std::fmt;
-use uuid::Uuid;
 use std::net::SocketAddr;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {

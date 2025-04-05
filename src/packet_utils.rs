@@ -1,3 +1,6 @@
+use std::collections::{BTreeMap,HashMap};
+use std::time::{Duration, Instant};
+
 pub fn split_packet(data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
     data.chunks(max_size).map(|chunk| chunk.to_vec()).collect()
 }
@@ -5,8 +8,6 @@ pub fn split_packet(data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
 pub fn reassemble_packets(chunks: Vec<Vec<u8>>) -> Vec<u8> {
     chunks.into_iter().flatten().collect()
 }
-
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct PacketHeader {
@@ -84,8 +85,6 @@ pub fn deframe_chunks(packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
     Some(result)
 }
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 pub struct ReassemblyBuffer {
     messages: HashMap<u32, MessageChunks>,

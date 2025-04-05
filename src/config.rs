@@ -1,6 +1,5 @@
 use serde::Deserialize;
-use std::fs;
-use std::env;
+use std::{fs,env};
 use tracing::{info, error, warn};
 
 #[derive(Debug, Deserialize, Clone)]

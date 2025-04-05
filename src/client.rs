@@ -1,21 +1,19 @@
-use crate::tunnel::Tunnel;
-use crate::config::Config;
-use crate::net::{calculate_max_payload_size, discover_path_mtu};
-use socket2::Socket;
-use std::net::UdpSocket as StdUdpSocket;
 use async_trait::async_trait;
-use tracing::{info, error, warn, trace};
+use crate::config::Config;
+use crate::context::{MessageContext, MessageType};
+use crate::net::{calculate_max_payload_size, discover_path_mtu};
+use crate::packet_utils::{frame_chunks, deframe_chunks};
+use crate::tunnel::Tunnel;
+use socket2::Socket;
+use std::net::SocketAddr;
+use std::net::UdpSocket as StdUdpSocket;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task;
-use std::sync::Arc;
-use std::net::SocketAddr;
 use tokio::time::{sleep, Duration}; // For rate limiting
-use crate::packet_utils::{frame_chunks, deframe_chunks}; // Updated import
-use crate::context::{MessageContext, MessageType}; // Added import
-use tracing::info_span; // Added import
-use std::fmt; // Added import for Display implementation
-use uuid::Uuid; // Add near the top
+use tracing::{info, error, info_span, trace};
+use uuid::Uuid;
 
 pub struct Client {
     pub config: Config,
