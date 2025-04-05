@@ -69,8 +69,14 @@ impl TunnelImpl {
     }
 
     async fn handle_connection(&self, data: Vec<u8>, addr: SocketAddr) {
-        // Process received data
-        info!("Received data from {}: {:?}", addr, data);
+        let span = info_span!(
+            "handle_connection",
+            session_id = %self.session_id,
+            peer = %addr,
+            size = data.len()
+        );
+        let _enter = span.enter();
+        info!("Handling incoming connection");
 
         // Simulate some processing
         if let Err(e) = self.send_data(&data, addr).await {
@@ -140,7 +146,12 @@ impl Tunnel for TunnelImpl {
                 let mut buf = vec![0u8; buffer_size]; // Dynamic buffer size
                 match socket.recv_from(&mut buf).await {
                     Ok((size, src)) => {
-                        info!("Received data from {}", src);
+                        trace!(
+                            session_id = %Uuid::new_v4(),
+                            size = size,
+                            from = %src,
+                            "Received UDP packet"
+                        );
                         let data = buf[..size].to_vec();
                         if let Err(e) = tx.send(data).await {
                             error!("Failed to send data to channel: {}", e);
@@ -187,6 +198,14 @@ impl Tunnel for TunnelImpl {
 
             let sent_data = data.len() as f64;
             let sleep_duration = Duration::from_secs_f64(sent_data / rate_limit_bytes);
+            if sleep_duration > Duration::ZERO {
+                trace!(
+                    message_id = msg_ctx.message_id,
+                    session_id = %msg_ctx.session_id,
+                    delay_ms = sleep_duration.as_millis(),
+                    "Rate limiting delay before sending"
+                );
+            }
 
             // Sleep to respect the rate limit
             sleep(sleep_duration).await;
@@ -251,6 +270,15 @@ impl Tunnel for TunnelImpl {
             payload: raw_chunk,
         };
 
+        trace!(
+            message_id = chunk.message_id,
+            chunk_id = chunk.chunk_id,
+            total_chunks = ?chunk.total_chunks,
+            size = chunk.payload.len(),
+            direction = %Direction::Inbound,
+            "Received and registered chunk"
+        );
+
         let mut assembly = self.assembly_map.write().await;
         let entry = assembly.entry(chunk.message_id).or_default();
         entry.push(chunk);
@@ -298,13 +326,13 @@ impl Tunnel for TunnelImpl {
 
         debug!(
             size = decompressed_data.len(),
-            "Successfully received and reassembled message"
+            "Successfully decoded message"
         );
 
         trace!(
             direction = %Direction::Inbound,
             size = decompressed_data.len(),
-            "Received and decompressed message"
+            "Decompressed payload"
         );
 
         Ok(decompressed_data)
