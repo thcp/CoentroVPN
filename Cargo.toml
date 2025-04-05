@@ -6,6 +6,7 @@ edition = "2021"
 default = []
 pretty-logs = []
 [dependencies]
+itertools = "0.14.0" # Add itertools crate
 rand = "0.9.0"
 thiserror = "2.0.12"
 nix = "0.29"

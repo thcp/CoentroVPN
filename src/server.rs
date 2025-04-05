@@ -26,6 +26,8 @@ pub struct Server {
 impl Tunnel for Server {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.session_id = Uuid::new_v4(); // Inserted line
+        let span = info_span!("server_start", session_id = %self.session_id);
+        let _enter = span.enter();
         debug!(session_id = %self.session_id, "New server session started");
 
         let addr = format!("{}:{}", self.config.listen_addr, self.config.listen_port);

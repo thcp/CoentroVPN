@@ -39,6 +39,8 @@ impl Clone for Client {
 #[async_trait]
 impl Tunnel for Client {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {  // mutable self
+        let span = info_span!("client_start", session_id = %self.session_id);
+        let _enter = span.enter();
         let local = "0.0.0.0:0"; // Bind to a random port
         let server = format!("{}:{}", self.config.server_addr, self.config.listen_port);
         

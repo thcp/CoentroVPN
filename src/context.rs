@@ -1,5 +1,6 @@
 use std::fmt;
 use uuid::Uuid;
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
@@ -46,4 +47,5 @@ impl fmt::Display for Direction {
 #[derive(Debug, Clone)]
 pub struct SessionContext {
     pub session_id: Uuid,
+    pub peer_addr: Option<SocketAddr>,
 }
