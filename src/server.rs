@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::context::{Direction, ChunkContext, MessageContext, MessageType};
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use crate::packet_utils::{split_packet, frame_chunks, deframe_chunks};
-use crate::tunnel::Tunnel;
+use crate::tunnel::{Tunnel, decompress_data};
 use socket2::Socket;
 use std::fmt;
 use std::net::SocketAddr;
@@ -191,7 +191,7 @@ impl Tunnel for Server {
         let mut buf = vec![0u8; 1024];
         let (size, _) = socket.recv_from(&mut buf).await?;
 
-        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated to use deframe_chunks
+        let mut data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated to use deframe_chunks
             Some(data) => data,
             None => {
                 error!("Deframe failed for received packet, discarding");
@@ -199,10 +199,15 @@ impl Tunnel for Server {
             }
         };
 
+        data = decompress_data(
+            &data,
+            &self.config.compression.algorithm
+        ).await?;
+
         let msg_ctx = MessageContext {
             message_id: 0, // TODO: parse actual message_id from chunk when available
             session_id: self.session_id,
-            size: reassembled_data.len(),
+            size: data.len(),
             message_type: MessageType::Data,
         };
 
@@ -216,16 +221,16 @@ impl Tunnel for Server {
 
          trace!( // Added tracing
             direction = %Direction::Inbound,
-            size = reassembled_data.len(),
+            size = data.len(),
             "Received and decompressed message"
         );
 
         debug!( // Added debug logging
-            size = reassembled_data.len(),
+            size = data.len(),
             "Successfully received and reassembled message"
         );
 
-        Ok(reassembled_data) // Use reassembled_data here
+        Ok(data) // Use data here
     }
 }
 

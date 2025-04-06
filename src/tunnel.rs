@@ -8,8 +8,9 @@ pub trait Tunnel: Send + Sync {
 use crate::config::Config;
 use crate::context::{MessageContext, MessageType};
 use crate::packet_utils::frame_chunks;
-use socket2::Socket; // Added import for Socket
 use tracing::{debug, trace};
+use std::io::Read;
+use tokio::task;
 
 pub struct TunnelImpl {
     pub config: Config,
@@ -69,7 +70,59 @@ impl TunnelImpl {
     }
 }
 
-// Dummy placeholder to satisfy compiler (replace with real one)
-async fn compress_data(data: &[u8], _algorithm: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(data.to_vec()) // simulate
+async fn compress_data(
+    data: &[u8],
+    algorithm: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let input = data.to_vec();
+    let result = match algorithm {
+        "lz4" => {
+            task::spawn_blocking(move || {
+                let mut encoder = lz4::EncoderBuilder::new().build(Vec::new())?;
+                std::io::copy(&mut &input[..], &mut encoder)?;
+                let (compressed, result) = encoder.finish();
+                result?;
+                Ok(compressed)
+            })
+            .await?
+        }
+        "zstd" => {
+            task::spawn_blocking(move || {
+                let compressed = zstd::stream::encode_all(&input[..], 1)?;
+                Ok(compressed)
+            })
+            .await?
+        }
+        _ => Err(format!("Unsupported compression algorithm: {}", algorithm).into()),
+    };
+    result
+}
+
+pub async fn decompress_data(
+    data: &[u8],
+    algorithm: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let input = data.to_vec();
+    let result = match algorithm {
+        "lz4" => {
+            task::spawn_blocking(move || {
+                let mut decoder = lz4::Decoder::new(&input[..])?;
+                let mut decompressed = Vec::new();
+                decoder.read_to_end(&mut decompressed)?;
+                Ok(decompressed)
+            })
+            .await?
+        }
+        "zstd" => {
+            task::spawn_blocking(move || {
+                let mut decoder = zstd::stream::Decoder::new(&input[..])?;
+                let mut decompressed = Vec::new();
+                decoder.read_to_end(&mut decompressed)?;
+                Ok(decompressed)
+            })
+            .await?
+        }
+        _ => Err(format!("Unsupported decompression algorithm: {}", algorithm).into()),
+    };
+    result
 }

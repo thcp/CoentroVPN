@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::context::{MessageContext, MessageType};
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use crate::packet_utils::{frame_chunks, deframe_chunks};
-use crate::tunnel::Tunnel;
+use crate::tunnel::{Tunnel,decompress_data};
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::sync::Arc;
@@ -221,10 +221,16 @@ impl Tunnel for Client {
             }
         };
 
+        // Decompress if compression is configured
+        let decompressed_data = decompress_data(
+            &reassembled_data,
+            &self.config.compression.algorithm
+        ).await?; // Added decompression
+
         let msg_ctx = MessageContext {
             message_id: 0, // TODO: parse actual message_id from chunk when available
             session_id: self.session_id,
-            size: reassembled_data.len(),
+            size: decompressed_data.len(),
             message_type: MessageType::Data,
         };
 
@@ -236,6 +242,6 @@ impl Tunnel for Client {
         );
         let _enter = span.enter();
 
-        Ok(reassembled_data)
+        Ok(decompressed_data) // Updated return value
     }
 }
