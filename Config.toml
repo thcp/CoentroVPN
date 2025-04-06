@@ -8,6 +8,7 @@ log_level = "info"  # Possible values: "debug", "info", "error", etc.
 
 [compression]
 algorithm = "lz4"  # Possible values: "lz4", "zstd"
+min_compression_size = 512  # Only compress messages larger than this size (in bytes)
 
 [udp]
 mtu = 1500  # Maximum Transmission Unit (MTU), adjust based on network environment

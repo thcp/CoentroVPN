@@ -1,15 +1,23 @@
 use serde::Deserialize;
-use std::{fs,env};
-use tracing::{info, error, warn};
+use std::{env, fs};
+use tracing::info;
+
+#[async_trait::async_trait]
+pub trait Tunnel: Send + Sync {
+    async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn send_data(&self, data: &[u8], addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LoggingConfig {
     pub log_level: String,  // Log level (e.g., "debug", "info", "error")
 }
 
-#[derive(Debug, Deserialize, Clone)]  // Add Clone derive here
+#[derive(Debug, Deserialize, Clone)]
 pub struct CompressionConfig {
     pub algorithm: String,  // Compression algorithm choice
+    pub min_compression_size: Option<usize>, // Minimum compression size
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -17,7 +25,7 @@ pub struct UdpConfig {
     pub mtu: Option<u16>,           // Maximum Transmission Unit
     pub buffer_size: Option<usize>, // Buffer size for UDP packets
     pub connection_timeout: Option<u64>, // Connection timeout in seconds
-    pub rate_limit: Option<u64>,    // Rate limit in bytes per second (Optional)
+    pub rate_limit: Option<u64>,    // Rate limit in bytes per second
     pub flow_control_threshold: Option<u64>, // Flow control threshold in bytes
     pub max_packet_size: Option<usize>,  // Max packet size for splitting data packets
     pub recv_buffer_size: Option<usize>, // OS-level receive buffer size
@@ -25,35 +33,28 @@ pub struct UdpConfig {
     pub enable_mtu_discovery: Option<bool>, // Enable dynamic MTU discovery
 }
 
-#[derive(Debug, Deserialize, Clone)]  // Add Clone derive here
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub mode: String,
     pub server_addr: String,
     pub listen_port: u16,
     pub listen_addr: String,
-    pub logging: LoggingConfig,  // Added logging configuration
-    pub compression: CompressionConfig,  // Compression settings
-    pub udp: UdpConfig, // New field for UDP configurations
+    pub logging: LoggingConfig,
+    pub compression: CompressionConfig,
+    pub udp: UdpConfig,
 }
 
 impl Config {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
         info!("Loading config from {}", path);
-        let contents = fs::read_to_string(path).map_err(|e| {
-            error!("Failed to load config from {}: {}", path, e);
-            e
-        })?;
-        let config: Config = toml::from_str(&contents).map_err(|e| {
-            error!("Failed to parse config from {}: {}", path, e);
-            e
-        })?;
+        let contents = fs::read_to_string(path)?;
+        let config: Config = toml::from_str(&contents)?;
         Ok(config)
     }
 
     pub fn from_env_or_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let mut config = Self::from_file(path)?;
 
-        // Override with environment variables if they exist
         if let Ok(mode) = env::var("MODE") {
             config.mode = mode;
         }
@@ -64,47 +65,52 @@ impl Config {
             config.listen_addr = listen_addr;
         }
         if let Ok(listen_port) = env::var("LISTEN_PORT") {
-            config.listen_port = match listen_port.parse() {
-                Ok(port) => port,
-                Err(_) => {
-                    warn!("Invalid LISTEN_PORT '{}', falling back to {}", listen_port, config.listen_port);
-                    config.listen_port
-                }
-            };
+            config.listen_port = listen_port.parse().unwrap_or(config.listen_port);
         }
         if let Ok(log_level) = env::var("LOG_LEVEL") {
             config.logging.log_level = log_level;
         }
+        if let Ok(min_size) = env::var("COMPRESSION_MIN_SIZE") {
+            config.compression.min_compression_size = Some(min_size.parse().unwrap_or(512));
+        }
 
-        // Override UDP configuration settings
         if let Ok(mtu) = env::var("UDP_MTU") {
-            config.udp.mtu = Some(mtu.parse().unwrap_or(config.udp.mtu.unwrap_or(1500)));
+            config.udp.mtu = Some(mtu.parse().unwrap_or(1500));
         }
         if let Ok(buffer_size) = env::var("UDP_BUFFER_SIZE") {
-            config.udp.buffer_size = Some(buffer_size.parse().unwrap_or(config.udp.buffer_size.unwrap_or(8192))); // Default to 8 KB if not provided
+            config.udp.buffer_size = Some(buffer_size.parse().unwrap_or(8192));
         }
         if let Ok(timeout) = env::var("UDP_CONNECTION_TIMEOUT") {
-            config.udp.connection_timeout = Some(timeout.parse().unwrap_or(config.udp.connection_timeout.unwrap_or(30)));
+            config.udp.connection_timeout = Some(timeout.parse().unwrap_or(30));
         }
         if let Ok(rate_limit) = env::var("UDP_RATE_LIMIT") {
-            config.udp.rate_limit = Some(rate_limit.parse().unwrap_or(config.udp.rate_limit.unwrap_or(1024 * 1024))); // Default to 1 MB/s if not provided
+            config.udp.rate_limit = Some(rate_limit.parse().unwrap_or(1024 * 1024));
         }
         if let Ok(max_packet_size) = env::var("UDP_MAX_PACKET_SIZE") {
-            config.udp.max_packet_size = Some(max_packet_size.parse().unwrap_or(config.udp.max_packet_size.unwrap_or(8192))); // Default to 8 KB if not provided
+            config.udp.max_packet_size = Some(max_packet_size.parse().unwrap_or(1400));
         }
-        if let Ok(flow_control_threshold) = env::var("UDP_FLOW_CONTROL_THRESHOLD") {
-            config.udp.flow_control_threshold = Some(flow_control_threshold.parse().unwrap_or(config.udp.flow_control_threshold.unwrap_or(1024 * 1024))); // Default to 1 MB if not provided
+        if let Ok(threshold) = env::var("UDP_FLOW_CONTROL_THRESHOLD") {
+            config.udp.flow_control_threshold = Some(threshold.parse().unwrap_or(500));
         }
         if let Ok(recv_buf) = env::var("UDP_RECV_BUFFER_SIZE") {
-            config.udp.recv_buffer_size = Some(recv_buf.parse().unwrap_or(config.udp.recv_buffer_size.unwrap_or(1048576)));
+            config.udp.recv_buffer_size = Some(recv_buf.parse().unwrap_or(1048576));
         }
         if let Ok(send_buf) = env::var("UDP_SEND_BUFFER_SIZE") {
-            config.udp.send_buffer_size = Some(send_buf.parse().unwrap_or(config.udp.send_buffer_size.unwrap_or(1048576)));
+            config.udp.send_buffer_size = Some(send_buf.parse().unwrap_or(1048576));
         }
         if let Ok(enable_mtu) = env::var("UDP_ENABLE_MTU_DISCOVERY") {
-            config.udp.enable_mtu_discovery = Some(enable_mtu.parse().unwrap_or(false));
+            config.udp.enable_mtu_discovery = Some(enable_mtu.parse().unwrap_or(true));
         }
 
         Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(size) = self.compression.min_compression_size {
+            if size < 64 {
+                return Err(format!("compression.min_compression_size must be >= 64, got {}", size));
+            }
+        }
+        Ok(())
     }
 }

@@ -42,6 +42,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
         let config = Config::from_env_or_file(&cli.config)?;
         info!("Config loaded: {:?}", config);
 
+        // Validate the config
+        config.validate()?; // Call the validate method
+
+        // Log the compression minimum size threshold
+        info!("Compression minimum size threshold: {} bytes", config.compression.min_compression_size.unwrap_or(0));
+
         // Check environment variable `LOG_LEVEL` first, then fallback to Config.toml
         let log_level = if let Ok(val) = env::var("LOG_LEVEL") {
             val.to_lowercase()
