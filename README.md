@@ -80,7 +80,7 @@ The project began with a vision to build a modern, flexible VPN with a modular a
 | Plugin Ecosystem                    | ⚠️ Planned via modular runtime         | ✅ Extensive plugin and script support                                       | ❌ No plugin system                                                        |
 | Platform Support                    | ✅ Cross-platform via Rust             | ✅ Extensive (Linux, Windows, macOS, BSD, Android)                           | ✅ Good (Linux native, user-space implementations elsewhere)              |
 | Security Audits                     | ⚠️ To be conducted                     | ✅ Repeated third-party audits, mature                                      | ✅ Audited by multiple third parties                                       |
-| Licensing                           | MIT                                    | GPLv2                                                                       | GPLv2                                                                     |
+| Licensing                           | GPLv3                                    | GPLv2                                                                       | GPLv2                                                                     |
 
 ### 🧩 Key Observations & Improvement Targets
 
