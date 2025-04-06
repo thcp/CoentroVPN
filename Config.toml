@@ -1,7 +1,7 @@
 mode = "server"
 server_addr = "127.0.0.1"
 listen_addr = "0.0.0.0"
-listen_port = 1194
+listen_port = 1193
 
 [logging]
 log_level = "info"  # Possible values: "debug", "info", "error", etc.
