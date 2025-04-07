@@ -22,7 +22,7 @@ pub fn discover_path_mtu(configured_mtu: usize, target: SocketAddr, enable: bool
         use std::net::UdpSocket;
         use std::os::unix::io::AsRawFd;
         use socket2::{Domain, Protocol, Socket, Type};
-        use nix::libc::{IP_MTU_DISCOVER, IP_PMTUDISC_DO, IPPROTO_IP};
+        use nix::libc::{IP_MTU_DISCOVER, IP_PMTUDISC_DO, IPPROTO_IP, setsockopt};
         use std::io;
 
         const PROBE_SIZE: usize = 1472; // Typical MTU (1500 - IP/UDP header)
