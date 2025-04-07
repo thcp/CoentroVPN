@@ -1,6 +1,7 @@
 pub mod client;
 pub mod config;
 pub mod context;
+pub mod crypto;
 pub mod logging;
 pub mod net;
 pub mod packet_utils;

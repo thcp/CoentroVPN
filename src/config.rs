@@ -1,3 +1,4 @@
+use hex;
 use serde::Deserialize;
 use std::{env, fs};
 use tracing::info;
@@ -18,6 +19,15 @@ pub struct LoggingConfig {
 pub struct CompressionConfig {
     pub algorithm: String,  // Compression algorithm choice
     pub min_compression_size: Option<usize>, // Minimum compression size
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct EncryptionConfig {
+    pub enabled: bool,
+    pub key: String, // Expecting 64 hex chars representing 32 bytes
+    pub algorithm: Option<String>, // e.g. "aes-gcm"
+    pub key_size: Option<u16>,     // Optional validation
+    pub iv_size: Option<u8>,       // Optional validation
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -42,6 +52,7 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub compression: CompressionConfig,
     pub udp: UdpConfig,
+    pub encryption: EncryptionConfig,
 }
 
 impl Config {
@@ -109,6 +120,14 @@ impl Config {
         if let Some(size) = self.compression.min_compression_size {
             if size < 64 {
                 return Err(format!("compression.min_compression_size must be >= 64, got {}", size));
+            }
+        }
+        if self.encryption.enabled {
+            if self.encryption.key.len() != 64 {
+                return Err("encryption.key must be 64 hex characters (32 bytes)".into());
+            }
+            if let Err(e) = hex::decode(&self.encryption.key) {
+                return Err(format!("Invalid hex in encryption.key: {}", e));
             }
         }
         Ok(())

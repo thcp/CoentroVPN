@@ -5,26 +5,33 @@ edition = "2021"
 [features]
 default = []
 pretty-logs = []
+
 [dependencies]
-itertools = "0.14.0" # Add itertools crate
-rand = "0.9.0"
-thiserror = "2.0.12"
-nix = "0.29"
-socket2 = "0.5.9"
-lz4 = "1.24.0"
-zstd = "0.13.3"
-num_cpus = {version = "1.13"}
-tokio-console = "0.1.13"
-tokio = { version = "1.44.2", features = ["full"] }
-uuid = { version = "1.8", features = ["v4"] }
+aead = "0.5"
+aes = "0.8"
+aes-gcm = { version = "0.10", features = ["aes"] }
 async-trait = "0.1"
-log = "0.4"
+bincode = { version = "2.0.1", features = ["derive","serde"] }
+clap = { version = "4.5.35", features = ["derive"] }
 env_logger = "0.11.8"
+futures = "0.3"
+hex ="0.4"
+itertools = "0.14.0"
+log = "0.4"
+lz4 = "1.24.0"
+nix = "0.29"
+num_cpus = {version = "1.13"}
+rand = "0.9.0"
+rand_core = "0.9.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.5.35", features = ["derive"] }
+socket2 = "0.5.9"
+thiserror = "2.0.12"
+tokio = { version = "1.44.2", features = ["full"] }
+tokio-console = "0.1.13"
+tokio-util = "0.7"
 toml = "0.8"
-futures = "0.3"   # For async operations
-tokio-util = "0.7"  # For async utilities
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.8", features = ["v4","serde"] }
+zstd = "0.13.3"

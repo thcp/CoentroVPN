@@ -21,7 +21,8 @@ send_buffer_size = 1048576  # OS-level send buffer size (in bytes)
 enable_mtu_discovery = true  # Enable dynamic MTU path discovery (true/false)
 
 [encryption]
-enabled = true  # Enable encryption (true/false)
+enabled = true
+key = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"  # 64 hex chars = 32 bytes
 algorithm = "aes-gcm"  # Possible values: "aes-gcm"
 key_size = 256  # AES key size (options: 128, 192, 256)
 iv_size = 12  # Initialization vector size (for AES-GCM)

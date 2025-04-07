@@ -2,16 +2,18 @@ use async_trait::async_trait;
 use crate::config::Config;
 use crate::context::{MessageContext, MessageType};
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
-use crate::packet_utils::{frame_chunks, deframe_chunks};
-use crate::tunnel::{Tunnel,decompress_data};
+use crate::packet_utils::{frame_chunks, deframe_chunks, ReassemblyBuffer};
+use crate::tunnel::Tunnel;
+use crate::packet_utils::decompress_data;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::sync::Arc;
+use std::time::Duration; // For rate limiting
 use socket2::Socket;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task;
-use tokio::time::{sleep, Duration}; // For rate limiting
+use tokio::time::{sleep}; // For rate limiting
 use tracing::{info, error, info_span, trace};
 use uuid::Uuid;
 
@@ -19,7 +21,8 @@ pub struct Client {
     pub config: Config,
     pub socket: Arc<Mutex<UdpSocket>>,
     pub server_addr: SocketAddr,
-    pub session_id: Uuid, // Fix session_id to use Uuid
+    pub session_id: Uuid,
+    pub reassembly_buffer: Arc<Mutex<ReassemblyBuffer>>,
 }
 
 // Implement Clone for Client
@@ -29,7 +32,8 @@ impl Clone for Client {
             config: self.config.clone(),
             socket: Arc::clone(&self.socket),
             server_addr: self.server_addr,
-            session_id: self.session_id, // Clone session_id
+            session_id: self.session_id,
+            reassembly_buffer: Arc::clone(&self.reassembly_buffer),
         }
     }
 }
@@ -73,6 +77,9 @@ impl Tunnel for Client {
         self.socket = Arc::new(Mutex::new(socket));
         info!("Client socket bound to {}", local);
 
+        // Initialize reassembly buffer
+        self.reassembly_buffer = Arc::new(Mutex::new(ReassemblyBuffer::new(Duration::from_secs(10))));
+
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let target = self.server_addr;
@@ -82,57 +89,20 @@ impl Tunnel for Client {
 
         let message = b"ping from client";
 
-        // Spawn a task for sending data concurrently
-        let socket_clone = Arc::clone(&self.socket); // Clone the Arc pointer
-        let client_clone = self.clone(); // Clone the entire client struct
-
-        task::spawn(async move {
-            let socket = socket_clone.lock().await; // Lock the socket
-
-            // Apply rate limiting based on configuration
-            if let Some(rate_limit) = client_clone.config.udp.rate_limit {
-                let rate_limit_bytes = rate_limit as f64;
-
-                let sent_data = message.len() as f64;
-                let sleep_duration = if rate_limit_bytes > 0.0 {
-                    Duration::from_secs_f64(sent_data / rate_limit_bytes)
-                } else {
-                    Duration::from_secs(0)
-                };
-
-                // Sleep to respect the rate limit
-                sleep(sleep_duration).await;
-            }
-
-            trace!("Sending message to server: {}", String::from_utf8_lossy(message));
-            if message.len() <= max_packet_size {
-                match socket.send_to(message, &client_clone.server_addr).await {
-                    Ok(_) => {
-                        info!("Sent message to server");
-                    }
-                    Err(e) => {
-                        error!("Failed to send message: {}", e);
-                    }
-                }
-            } else {
-                error!("Message size {} exceeds max_packet_size {}, dropping", message.len(), max_packet_size);
-            }
-        });
+        self.send_data(message, self.server_addr).await?;
 
         // Receiving response concurrently
-        let mut buf = [0u8; 1500];
-        let len = {
-            let socket = self.socket.lock().await; // Lock the socket for receiving
-            match socket.recv_from(&mut buf).await {
-                Ok((size, _)) => size,
-                Err(e) => {
-                    error!("Failed to receive data: {}", e);
-                    return Err(Box::new(e));
-                }
-            }
+        let response = self.receive_data().await?;
+        info!("Received from server: {}", String::from_utf8_lossy(&response));
+
+        let heartbeat = b"heartbeat";
+        let hb_ctx = MessageContext {
+            message_id: rand::random::<u64>(),
+            session_id: self.session_id,
+            size: heartbeat.len(),
+            message_type: MessageType::Heartbeat,
         };
-        
-        info!("Received from server: {}", String::from_utf8_lossy(&buf[..len]));
+        self.send_data(heartbeat, self.server_addr).await?;
 
         Ok(())
     }
@@ -185,7 +155,7 @@ impl Tunnel for Client {
             socket.send_to(data, addr).await?;
         } else {
             // Update MTU-based packet sizing
-            let chunks = frame_chunks(data, max_packet_size - 8, msg_id); // Updated to frame chunks
+            let chunks = frame_chunks(data, max_packet_size - 8, msg_id, msg_ctx.message_type.to_u8());
 
             // Send each chunk
             for chunk in chunks {
@@ -212,11 +182,12 @@ impl Tunnel for Client {
             return Err("Received packet exceeds max_packet_size".into());
         }
 
-        // Check if received data fits within max packet size
-        let reassembled_data = match deframe_chunks(vec![buf[..size].to_vec()]) { // Updated to use deframe_chunks
+        let mut buffer = self.reassembly_buffer.lock().await;
+        buffer.purge_expired();
+        let reassembled_data = match buffer.insert(buf[..size].to_vec()) {
             Some(data) => data,
             None => {
-                error!("Deframe failed for received packet, discarding");
+                error!("Reassembly failed: awaiting more chunks");
                 return Err("Failed to reassemble packet".into());
             }
         };
@@ -237,10 +208,20 @@ impl Tunnel for Client {
         let span = info_span!(
             "message_receive",
             session_id = %msg_ctx.session_id,
-            message_type = %msg_ctx.message_type,
+            message_type = %msg_ctx.message_type,  // using Display impl
             size = msg_ctx.size
         );
         let _enter = span.enter();
+
+        match msg_ctx.message_type {
+            MessageType::Control => {
+                trace!("Received Control message: {:?}", String::from_utf8_lossy(&reassembled_data));
+            }
+            MessageType::Heartbeat => {
+                trace!("Received Heartbeat message: {:?}", String::from_utf8_lossy(&reassembled_data));
+            }
+            _ => {}
+        }
 
         Ok(decompressed_data) // Updated return value
     }

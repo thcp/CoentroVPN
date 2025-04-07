@@ -2,6 +2,7 @@ use clap::Parser;
 use coentrovpn::client::Client;
 use coentrovpn::config::Config;
 use coentrovpn::logging::init_logging; // Updated import
+use coentrovpn::packet_utils::ReassemblyBuffer;
 use coentrovpn::server::Server;
 use coentrovpn::tunnel::Tunnel;
 use num_cpus;  // Import the num_cpus crate
@@ -12,7 +13,6 @@ use tokio::runtime::Builder;  // Import Builder to manually create the runtime
 use tokio::sync::Mutex; // Add this import for Mutex
 use tracing::{info, debug}; // Updated import
 use uuid::Uuid;
-
 
 #[derive(Parser, Debug)]
 #[command(name = "coentrovpn", version)]
@@ -85,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
                     config,
                     socket: Arc::clone(&socket),
                     session_id: Uuid::new_v4(),
+                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(std::time::Duration::from_secs(10)))),
                 }; // Declare server as mutable
                 server.start().await?;  // Now we can call start() on a mutable reference
             }
@@ -95,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
                     socket: Arc::clone(&socket),
                     server_addr,
                     session_id: Uuid::new_v4(),
+                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(std::time::Duration::from_secs(10)))),
                 };
                 client.start().await?;  // Now we can call start() on a mutable reference
             }
