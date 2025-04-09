@@ -7,8 +7,13 @@ default = []
 pretty-logs = []
 
 [dependencies]
+reqwest = "0.12.15"
+lazy_static = "1.5.0"
+prometheus = "0.14.0"
+hyper = "1.6.0"
+axum = "0.8.3"
 aead = "0.5"
-aes = "0.8"
+aes = "0.8.4"
 aes-gcm = { version = "0.10", features = ["aes"] }
 async-trait = "0.1"
 bincode = { version = "2.0.1", features = ["derive","serde"] }
@@ -32,6 +37,6 @@ tokio-console = "0.1.13"
 tokio-util = "0.7"
 toml = "0.8"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "time"] }
 uuid = { version = "1.8", features = ["v4","serde"] }
 zstd = "0.13.3"

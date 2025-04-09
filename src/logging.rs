@@ -1,18 +1,22 @@
 use tracing_subscriber::{fmt, EnvFilter};
 use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::fmt::time::UtcTime;
 
-pub fn init_logging(level: &str) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+pub fn init_logging(level: &str, format: &str) {
+    if EnvFilter::try_new(level).is_err() {
+        eprintln!("Invalid log level '{}', falling back to 'info'", level);
+    }
+
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     let builder = fmt()
-        .with_env_filter(env_filter)
-        .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
-        .with_target(true);
+        .with_env_filter(filter)
+        .with_span_events(FmtSpan::ENTER | FmtSpan::EXIT)
+        .with_timer(UtcTime::rfc_3339());
 
-    #[cfg(feature = "pretty-logs")]
-    builder.pretty().init();
-
-    #[cfg(not(feature = "pretty-logs"))]
-    builder.json().init();
+    if format == "json" {
+        builder.json().init();
+    } else {
+        builder.pretty().with_ansi(true).init();
+    }
 }

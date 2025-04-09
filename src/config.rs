@@ -13,6 +13,7 @@ pub trait Tunnel: Send + Sync {
 #[derive(Debug, Deserialize, Clone)]
 pub struct LoggingConfig {
     pub log_level: String,  // Log level (e.g., "debug", "info", "error")
+    pub format: String, // "json" or "pretty"
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -53,6 +54,8 @@ pub struct Config {
     pub compression: CompressionConfig,
     pub udp: UdpConfig,
     pub encryption: EncryptionConfig,
+    pub metrics_addr: String,
+    pub health_addr: String   
 }
 
 impl Config {

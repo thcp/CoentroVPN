@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use crate::config::Config;
-use crate::context::{Direction, ChunkContext, MessageContext, MessageType};
+use crate::context::{Direction, ChunkContext, MessageContext, MessageType, ControlPayload, HandshakePayload}; // Added ControlPayload and HandshakePayload
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use crate::packet_utils::{split_packet, frame_chunks, deframe_chunks, ReassemblyBuffer}; // Added ReassemblyBuffer
 use crate::tunnel::Tunnel;
 use crate::packet_utils::decompress_data;
+use bincode::config::standard; // Added bincode imports
+use bincode::serde::decode_from_slice as deserialize; // Added bincode imports
 use socket2::Socket;
 use std::fmt;
 use std::net::SocketAddr;
@@ -17,6 +19,7 @@ use tokio::time::{sleep}; // For rate limiting
 use tracing::{info, error, debug, trace}; // Updated to use structured logging
 use tracing::info_span;
 use uuid::Uuid;
+use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
 
 pub struct Server {
     pub config: Config,
@@ -136,6 +139,7 @@ impl Tunnel for Server {
         info!("Using max_packet_size: {}", max_size); // Moved line here
 
         let chunks = frame_chunks(&data, max_size - 8, msg_id, msg_ctx.message_type.to_u8());
+        PACKETS_TOTAL.inc_by(chunks.len() as f64);
         let total_chunks = chunks.len() as u32;
 
         debug!(
@@ -211,14 +215,39 @@ impl Tunnel for Server {
 
         match msg_ctx.message_type {
             MessageType::Control => {
-                trace!("Received Control message: {:?}", String::from_utf8_lossy(&reassembled_data));
+                match deserialize::<ControlPayload, _>(&reassembled_data, standard()) {
+                    Ok((payload, _)) => {
+                        trace!("Deserialized ControlPayload: {:?}", payload);
+                    }
+                    Err(e) => {
+                        trace!("Failed to deserialize ControlPayload: {:?}", e);
+                    }
+                }
             }
             MessageType::Heartbeat => {
-                trace!("Received Heartbeat message: {:?}", String::from_utf8_lossy(&reassembled_data));
+                match deserialize::<crate::context::HeartbeatPayload, _>(&reassembled_data, standard()) {
+                    Ok((payload, _)) => {
+                        trace!("Deserialized HeartbeatPayload: {:?}", payload);
+                    }
+                    Err(e) => {
+                        trace!("Failed to deserialize HeartbeatPayload: {:?}", e);
+                    }
+                }
+            }
+            MessageType::Handshake => {
+                match deserialize::<HandshakePayload, _>(&reassembled_data, standard()) {
+                    Ok((payload, _)) => {
+                        trace!("Deserialized HandshakePayload: {:?}", payload);
+                    }
+                    Err(e) => {
+                        trace!("Failed to deserialize HandshakePayload: {:?}", e);
+                    }
+                }
             }
             _ => {}
         }
 
+        PACKETS_TOTAL.inc(); // Added metric increment
         Ok(reassembled_data) // Use reassembled_data here
     }
 }

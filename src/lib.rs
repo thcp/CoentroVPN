@@ -7,3 +7,4 @@ pub mod net;
 pub mod packet_utils;
 pub mod server;
 pub mod tunnel;
+pub mod observability;

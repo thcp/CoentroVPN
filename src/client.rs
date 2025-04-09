@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use crate::config::Config;
-use crate::context::{MessageContext, MessageType};
+use crate::context::{MessageContext, MessageType, ControlPayload, HandshakePayload};
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
 use crate::packet_utils::{frame_chunks, deframe_chunks, ReassemblyBuffer};
 use crate::tunnel::Tunnel;
 use crate::packet_utils::decompress_data;
+use bincode::config::standard;
+use bincode::serde::encode_to_vec as serialize;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::sync::Arc;
@@ -16,6 +18,7 @@ use tokio::task;
 use tokio::time::{sleep}; // For rate limiting
 use tracing::{info, error, info_span, trace};
 use uuid::Uuid;
+use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
 
 pub struct Client {
     pub config: Config,
@@ -87,9 +90,20 @@ impl Tunnel for Client {
 
         let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
-        let message = b"ping from client";
+        let handshake = HandshakePayload {
+            session_id: self.session_id,
+            client_info: "client-rust".to_string(),
+        };
 
-        self.send_data(message, self.server_addr).await?;
+        let handshake_bytes = serialize(&handshake, standard())?;
+        let handshake_ctx = MessageContext {
+            message_id: rand::random::<u64>(),
+            session_id: self.session_id,
+            size: handshake_bytes.len(),
+            message_type: MessageType::Handshake,
+        };
+
+        self.send_data(&handshake_bytes, self.server_addr).await?;
 
         // Receiving response concurrently
         let response = self.receive_data().await?;
@@ -156,7 +170,7 @@ impl Tunnel for Client {
         } else {
             // Update MTU-based packet sizing
             let chunks = frame_chunks(data, max_packet_size - 8, msg_id, msg_ctx.message_type.to_u8());
-
+            PACKETS_TOTAL.inc_by(chunks.len() as f64); // Increment metric after preparing chunks
             // Send each chunk
             for chunk in chunks {
                 socket.send_to(&chunk, addr).await?;
@@ -223,6 +237,7 @@ impl Tunnel for Client {
             _ => {}
         }
 
+        PACKETS_TOTAL.inc(); // Increment received counter before returning
         Ok(decompressed_data) // Updated return value
     }
 }

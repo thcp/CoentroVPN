@@ -2,7 +2,8 @@ use crate::config::Config;
 use crate::context::{MessageContext, MessageType};
 use crate::packet_utils::{frame_chunks, PacketHeader, ReassemblyBuffer, compress_data, decompress_data};
 use crate::crypto::aes_gcm::AesGcmEncryptor;
-use tracing::{debug, trace};
+use crate::observability::PACKETS_TOTAL;
+use tracing::{debug, trace, info};
 use std::io::Read;
 use tokio::task;
 use tokio::net::UdpSocket;
@@ -103,6 +104,7 @@ impl TunnelImpl {
         }
 
         let chunks = frame_chunks(&payload, 1400 - 8, msg_ctx.message_id as u32, msg_ctx.message_type.to_u8()); // example MTU logic
+        PACKETS_TOTAL.inc_by(chunks.len() as f64);
         Ok(chunks)
     }
 
@@ -197,6 +199,7 @@ impl TunnelImpl {
                 _ => {}
             }
 
+            PACKETS_TOTAL.inc();
             return Ok(final_payload);
         } else {
             return Err("Incomplete message: awaiting more chunks".into());
