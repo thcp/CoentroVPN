@@ -102,6 +102,7 @@ pub struct PendingMessage {
     pub destination: SocketAddr,
     pub last_sent: Instant,
     pub retries: usize,
+    pub backoff: std::time::Duration,
 }
 
 #[derive(Debug, Default)]

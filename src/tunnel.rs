@@ -150,6 +150,7 @@ impl TunnelImpl {
                 destination: addr,
                 last_sent: Instant::now(),
                 retries: 0,
+                backoff: Duration::from_secs(1), // Initialize with a default backoff duration
             },
         );
 
@@ -312,6 +313,7 @@ impl TunnelImpl {
     pub async fn start_resend_loop(self: Arc<Self>) {
         let resend_interval = Duration::from_secs(3);
         let max_retries = 5;
+        let max_backoff = Duration::from_secs(30); // Maximum backoff duration
         let socket = self.socket.clone();
         let pending_messages = self.pending_messages.clone();
 
@@ -326,26 +328,35 @@ impl TunnelImpl {
                     if now.duration_since(msg.last_sent) > resend_interval
                         && msg.retries < max_retries
                     {
-                        let mut sock = socket.lock().await;
-                        for chunk in &msg.chunks {
-                            let _ = sock.send_to(chunk, msg.destination).await;
+                        let backoff = Duration::from_secs(2u64.pow(msg.retries.min(5) as u32)); // Exponential backoff
+                        if now.duration_since(msg.last_sent) >= backoff {
+                            let sock = socket.lock().await;
+                            for chunk in &msg.chunks {
+                                let _ = sock.send_to(chunk, msg.destination).await;
+                            }
+                            msg.last_sent = now;
+                            msg.retries += 1;
+                            RETRIES_TOTAL.inc();
+                            trace!(
+                                "Resent message_id: {} (retry #{}, backoff: {:?})",
+                                msg.message_id,
+                                msg.retries,
+                                backoff
+                            );
                         }
-                        msg.last_sent = now;
-                        msg.retries += 1;
-                        RETRIES_TOTAL.inc();
-                        trace!(
-                            "Resent message_id: {} (retry #{})",
-                            msg.message_id,
-                            msg.retries
-                        );
                     }
                 }
 
                 let mut window = self.sliding_window.lock().await;
                 pending.retain(|msg_id, msg| {
-                    let keep = msg.retries < max_retries;
+                    let keep = msg.retries < max_retries
+                        && now.duration_since(msg.last_sent) <= max_backoff;
                     if !keep {
                         window.inflight.retain(|id| id != msg_id);
+                        trace!(
+                            "Message_id {} removed due to exceeding retries or timeout",
+                            msg_id
+                        );
                     }
                     keep
                 });
