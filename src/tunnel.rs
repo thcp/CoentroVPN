@@ -46,17 +46,29 @@ impl TunnelImpl {
         message_type: &MessageType,
     ) -> Result<(Vec<u8>, bool), Box<dyn std::error::Error + Send + Sync>> {
         match message_type {
-            MessageType::Control | MessageType::Heartbeat => {
+            MessageType::Control | MessageType::Heartbeat | MessageType::Ack => {
+                // Skip compression for control-plane messages and acknowledgments
                 return Ok((data.to_vec(), false));
             }
             _ => {}
         }
 
         if data.len() < min_size {
+            // Skip compression if the data size is below the minimum threshold
+            trace!(
+                "Skipping compression: data size {} is below min_compression_size {}",
+                data.len(),
+                min_size
+            );
             return Ok((data.to_vec(), false));
         }
 
         let compressed = compress_data(data, algorithm).await?;
+        trace!(
+            "Compression applied: original size = {}, compressed size = {}",
+            data.len(),
+            compressed.len()
+        );
         Ok((compressed, true))
     }
 
@@ -66,8 +78,8 @@ impl TunnelImpl {
         msg_ctx: &MessageContext,
         addr: SocketAddr,
     ) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-        let algorithm = &self.config.compression.algorithm;
-        let min_size = self.config.compression.min_compression_size.unwrap_or(0);
+        let algorithm = &self.config.compression.algorithm; // Use compression algorithm from config
+        let min_size = self.config.compression.min_compression_size.unwrap_or(0); // Use min_compression_size from config
 
         let (mut payload, compressed) =
             Self::maybe_compress_data(&data, algorithm, min_size, &msg_ctx.message_type).await?;
@@ -308,6 +320,23 @@ impl TunnelImpl {
         } else {
             return Err("Incomplete message: awaiting more chunks".into());
         }
+    }
+
+    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Validate compression settings
+        if self.config.compression.min_compression_size.is_some() {
+            let min_size = self.config.compression.min_compression_size.unwrap();
+            if min_size == 0 {
+                return Err("min_compression_size must be greater than 0".into());
+            }
+        }
+
+        if self.config.compression.algorithm.is_empty() {
+            return Err("Compression algorithm must be specified".into());
+        }
+
+        // ...existing initialization logic...
+        Ok(())
     }
 
     pub async fn start_resend_loop(self: Arc<Self>) {

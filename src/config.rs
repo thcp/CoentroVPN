@@ -22,8 +22,8 @@ pub struct LoggingConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct CompressionConfig {
-    pub algorithm: String,                   // Compression algorithm choice
-    pub min_compression_size: Option<usize>, // Minimum compression size
+    pub algorithm: String, // Compression algorithm (e.g., "gzip", "zstd")
+    pub min_compression_size: Option<usize>, // Minimum size for compression
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -61,7 +61,7 @@ pub struct Config {
     pub listen_port: u16,
     pub listen_addr: String,
     pub logging: LoggingConfig,
-    pub compression: CompressionConfig,
+    pub compression: CompressionConfig, // Add compression configuration
     pub udp: UdpConfig,
     pub encryption: EncryptionConfig,
     pub observability: ObservabilityConfig,
