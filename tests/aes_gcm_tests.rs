@@ -8,8 +8,12 @@ fn test_aes_gcm_encrypt_decrypt_roundtrip() {
     let plaintext = b"The quick brown fox jumps over the lazy dog";
     let aad = b"associated data";
 
-    let (ciphertext, nonce) = encryptor.encrypt(plaintext, aad).expect("encryption failed");
-    let decrypted = encryptor.decrypt(&ciphertext, &nonce, aad).expect("decryption failed");
+    let (ciphertext, nonce) = encryptor
+        .encrypt(plaintext, aad)
+        .expect("encryption failed");
+    let decrypted = encryptor
+        .decrypt(&ciphertext, &nonce, aad)
+        .expect("decryption failed");
 
     assert_eq!(plaintext.to_vec(), decrypted);
 }

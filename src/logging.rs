@@ -1,6 +1,6 @@
-use tracing_subscriber::{fmt, EnvFilter};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::time::UtcTime;
+use tracing_subscriber::{fmt, EnvFilter};
 
 pub fn init_logging(level: &str, format: &str) {
     if EnvFilter::try_new(level).is_err() {

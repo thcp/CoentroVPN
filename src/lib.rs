@@ -4,7 +4,7 @@ pub mod context;
 pub mod crypto;
 pub mod logging;
 pub mod net;
+pub mod observability;
 pub mod packet_utils;
 pub mod server;
 pub mod tunnel;
-pub mod observability;

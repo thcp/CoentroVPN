@@ -1,15 +1,17 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::hash::Hash;
 use std::net::SocketAddr;
+use std::time::Instant;
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Direction {
     Inbound,
     Outbound,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageContext {
     pub message_id: u64,
     pub session_id: Uuid,
@@ -17,7 +19,7 @@ pub struct MessageContext {
     pub message_type: MessageType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkContext {
     pub message_id: u64,
     pub chunk_id: u32,
@@ -25,12 +27,13 @@ pub struct ChunkContext {
     pub direction: Direction,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MessageType {
     Control,
     Data,
     Handshake,
     Heartbeat,
+    Ack,
     #[allow(dead_code)]
     Unknown(u8),
 }
@@ -42,6 +45,7 @@ impl MessageType {
             MessageType::Data => 0,
             MessageType::Handshake => 4,
             MessageType::Heartbeat => 3,
+            MessageType::Ack => 5,
             MessageType::Unknown(v) => *v,
         }
     }
@@ -52,6 +56,7 @@ impl MessageType {
             2 => MessageType::Control,
             3 => MessageType::Heartbeat,
             4 => MessageType::Handshake,
+            5 => MessageType::Ack,
             other => MessageType::Unknown(other),
         }
     }
@@ -88,4 +93,19 @@ pub struct HeartbeatPayload {
 pub struct SessionContext {
     pub session_id: Uuid,
     pub peer_addr: Option<SocketAddr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingMessage {
+    pub message_id: u64,
+    pub chunks: Vec<Vec<u8>>,
+    pub destination: SocketAddr,
+    pub last_sent: Instant,
+    pub retries: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct SlidingWindow {
+    pub max_inflight: usize,
+    pub inflight: Vec<u64>,
 }

@@ -1,9 +1,9 @@
 use axum::{routing::get, Router};
-use prometheus::{Encoder, TextEncoder, Registry, Counter};
+use lazy_static::lazy_static;
+use prometheus::{Counter, Encoder, Registry, TextEncoder};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use lazy_static::lazy_static;
 
 #[derive(Clone)]
 pub struct HealthState {
@@ -12,7 +12,23 @@ pub struct HealthState {
 
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
-    pub static ref PACKETS_TOTAL: Counter = Counter::new("coentrovpn_packets_total", "Total packets handled").unwrap();
+    pub static ref PACKETS_TOTAL: Counter =
+        Counter::new("coentrovpn_packets_total", "Total packets handled").unwrap();
+    pub static ref RETRIES_TOTAL: Counter = Counter::new(
+        "coentrovpn_retries_total",
+        "Total retry attempts for unacked messages"
+    )
+    .unwrap();
+    pub static ref DUPLICATES_TOTAL: Counter = Counter::new(
+        "coentrovpn_duplicates_total",
+        "Total duplicate chunks discarded"
+    )
+    .unwrap();
+    pub static ref REASSEMBLIES_TOTAL: Counter = Counter::new(
+        "coentrovpn_reassemblies_total",
+        "Total successful message reassemblies"
+    )
+    .unwrap();
 }
 
 impl HealthState {
@@ -33,7 +49,18 @@ impl HealthState {
 }
 
 pub fn init_metrics() {
-    REGISTRY.register(Box::new(PACKETS_TOTAL.clone())).expect("Failed to register metric");
+    REGISTRY
+        .register(Box::new(PACKETS_TOTAL.clone()))
+        .expect("Failed to register metric");
+    REGISTRY
+        .register(Box::new(RETRIES_TOTAL.clone()))
+        .expect("Failed to register RETRIES_TOTAL");
+    REGISTRY
+        .register(Box::new(DUPLICATES_TOTAL.clone()))
+        .expect("Failed to register DUPLICATES_TOTAL");
+    REGISTRY
+        .register(Box::new(REASSEMBLIES_TOTAL.clone()))
+        .expect("Failed to register REASSEMBLIES_TOTAL");
 }
 
 pub async fn healthz() -> &'static str {
@@ -62,8 +89,10 @@ pub async fn start_health_server(addr: SocketAddr, state: Arc<HealthState>) {
         .route("/ready", get(move || ready(state.clone())))
         .route("/metrics", get(metrics));
     axum::serve(
-        tokio::net::TcpListener::bind(addr).await.expect("Failed to bind TCP listener"),
-        app.into_make_service()
+        tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("Failed to bind TCP listener"),
+        app.into_make_service(),
     )
     .await
     .expect("Health server failed to start");

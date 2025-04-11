@@ -6,26 +6,30 @@ use tracing::info;
 #[async_trait::async_trait]
 pub trait Tunnel: Send + Sync {
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    async fn send_data(&self, data: &[u8], addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn send_data(
+        &self,
+        data: &[u8],
+        addr: std::net::SocketAddr,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LoggingConfig {
-    pub log_level: String,  // Log level (e.g., "debug", "info", "error")
-    pub format: String, // "json" or "pretty"
+    pub log_level: String, // Log level (e.g., "debug", "info", "error")
+    pub format: String,    // "json" or "pretty"
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct CompressionConfig {
-    pub algorithm: String,  // Compression algorithm choice
+    pub algorithm: String,                   // Compression algorithm choice
     pub min_compression_size: Option<usize>, // Minimum compression size
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct EncryptionConfig {
     pub enabled: bool,
-    pub key: String, // Expecting 64 hex chars representing 32 bytes
+    pub key: String,               // Expecting 64 hex chars representing 32 bytes
     pub algorithm: Option<String>, // e.g. "aes-gcm"
     pub key_size: Option<u16>,     // Optional validation
     pub iv_size: Option<u8>,       // Optional validation
@@ -33,15 +37,21 @@ pub struct EncryptionConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct UdpConfig {
-    pub mtu: Option<u16>,           // Maximum Transmission Unit
-    pub buffer_size: Option<usize>, // Buffer size for UDP packets
-    pub connection_timeout: Option<u64>, // Connection timeout in seconds
-    pub rate_limit: Option<u64>,    // Rate limit in bytes per second
+    pub mtu: Option<u16>,                    // Maximum Transmission Unit
+    pub buffer_size: Option<usize>,          // Buffer size for UDP packets
+    pub connection_timeout: Option<u64>,     // Connection timeout in seconds
+    pub rate_limit: Option<u64>,             // Rate limit in bytes per second
     pub flow_control_threshold: Option<u64>, // Flow control threshold in bytes
-    pub max_packet_size: Option<usize>,  // Max packet size for splitting data packets
-    pub recv_buffer_size: Option<usize>, // OS-level receive buffer size
-    pub send_buffer_size: Option<usize>, // OS-level send buffer size
-    pub enable_mtu_discovery: Option<bool>, // Enable dynamic MTU discovery
+    pub max_packet_size: Option<usize>,      // Max packet size for splitting data packets
+    pub recv_buffer_size: Option<usize>,     // OS-level receive buffer size
+    pub send_buffer_size: Option<usize>,     // OS-level send buffer size
+    pub enable_mtu_discovery: Option<bool>,  // Enable dynamic MTU discovery
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ObservabilityConfig {
+    pub metrics_addr: String,
+    pub health_addr: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -54,19 +64,22 @@ pub struct Config {
     pub compression: CompressionConfig,
     pub udp: UdpConfig,
     pub encryption: EncryptionConfig,
-    pub metrics_addr: String,
-    pub health_addr: String   
+    pub observability: ObservabilityConfig,
 }
 
 impl Config {
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    pub fn from_file(
+        path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
         info!("Loading config from {}", path);
         let contents = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&contents)?;
         Ok(config)
     }
 
-    pub fn from_env_or_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    pub fn from_env_or_file(
+        path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let mut config = Self::from_file(path)?;
 
         if let Ok(mode) = env::var("MODE") {
@@ -122,7 +135,10 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(size) = self.compression.min_compression_size {
             if size < 64 {
-                return Err(format!("compression.min_compression_size must be >= 64, got {}", size));
+                return Err(format!(
+                    "compression.min_compression_size must be >= 64, got {}",
+                    size
+                ));
             }
         }
         if self.encryption.enabled {

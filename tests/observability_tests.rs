@@ -1,8 +1,8 @@
-use tokio::net::TcpListener;
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
+use coentrovpn::observability::{init_metrics, metrics};
 use reqwest::Client;
 use std::net::SocketAddr;
-use coentrovpn::observability::{init_metrics, metrics};
+use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn test_metrics_endpoint_responds_ok() {

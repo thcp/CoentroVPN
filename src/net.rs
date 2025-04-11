@@ -19,11 +19,11 @@ pub fn discover_path_mtu(configured_mtu: usize, target: SocketAddr, enable: bool
     // Linux only for now
     #[cfg(target_os = "linux")]
     {
+        use nix::libc::{setsockopt, IPPROTO_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DO};
+        use socket2::{Domain, Protocol, Socket, Type};
+        use std::io;
         use std::net::UdpSocket;
         use std::os::unix::io::AsRawFd;
-        use socket2::{Domain, Protocol, Socket, Type};
-        use nix::libc::{IP_MTU_DISCOVER, IP_PMTUDISC_DO, IPPROTO_IP, setsockopt};
-        use std::io;
 
         const PROBE_SIZE: usize = 1472; // Typical MTU (1500 - IP/UDP header)
 
@@ -57,7 +57,7 @@ pub fn discover_path_mtu(configured_mtu: usize, target: SocketAddr, enable: bool
             Ok(_) => {
                 log::info!("Discovered MTU: {}", PROBE_SIZE);
                 PROBE_SIZE
-            },
+            }
             Err(e) => {
                 if e.kind() == io::ErrorKind::Other {
                     log::warn!("MTU probe failed, falling back: {}", e);

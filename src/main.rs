@@ -2,17 +2,18 @@ use clap::Parser;
 use coentrovpn::client::Client;
 use coentrovpn::config::Config;
 use coentrovpn::logging::init_logging;
+use coentrovpn::observability::{init_metrics, start_health_server, HealthState};
 use coentrovpn::packet_utils::ReassemblyBuffer;
 use coentrovpn::server::Server;
 use coentrovpn::tunnel::Tunnel;
-use coentrovpn::observability::{HealthState, start_health_server, init_metrics};
 use num_cpus;
+use std::collections::HashSet;
 use std::env;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::runtime::Builder;
 use tokio::sync::Mutex;
-use tracing::{info, debug};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -57,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
 
         // Initialize health state and server
         let health_state = Arc::new(HealthState::new());
-        let health_addr = config.health_addr.parse()?;
+        let health_addr = config.observability.health_addr.parse()?;
         tokio::spawn(start_health_server(health_addr, Arc::clone(&health_state)));
         info!("Metrics available at http://{}/metrics", health_addr);
 
@@ -75,7 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
                     config,
                     socket: Arc::clone(&socket),
                     session_id: Uuid::new_v4(),
-                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(std::time::Duration::from_secs(10)))),
+                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(
+                        std::time::Duration::from_secs(10),
+                    ))),
+                    received_message_ids: Arc::new(Mutex::new(HashSet::new())),
                 };
                 server.start().await?;
             }
@@ -86,7 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
                     socket: Arc::clone(&socket),
                     server_addr,
                     session_id: Uuid::new_v4(),
-                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(std::time::Duration::from_secs(10)))),
+                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(
+                        std::time::Duration::from_secs(10),
+                    ))),
+                    received_message_ids: Arc::new(Mutex::new(HashSet::new())),
                 };
                 client.start().await?;
             }

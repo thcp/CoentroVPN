@@ -1,24 +1,25 @@
-use async_trait::async_trait;
 use crate::config::Config;
-use crate::context::{MessageContext, MessageType, ControlPayload, HandshakePayload};
+use crate::context::{ControlPayload, HandshakePayload, MessageContext, MessageType};
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
-use crate::packet_utils::{frame_chunks, deframe_chunks, ReassemblyBuffer};
-use crate::tunnel::Tunnel;
+use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
 use crate::packet_utils::decompress_data;
+use crate::packet_utils::{deframe_chunks, frame_chunks, ReassemblyBuffer};
+use crate::tunnel::Tunnel;
+use async_trait::async_trait;
 use bincode::config::standard;
 use bincode::serde::encode_to_vec as serialize;
+use socket2::Socket;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::sync::Arc;
 use std::time::Duration; // For rate limiting
-use socket2::Socket;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task;
-use tokio::time::{sleep}; // For rate limiting
-use tracing::{info, error, info_span, trace};
-use uuid::Uuid;
-use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
+use tokio::time::sleep; // For rate limiting
+use tracing::{error, info, info_span, trace};
+use uuid::Uuid; // Added import for HashSet
 
 pub struct Client {
     pub config: Config,
@@ -26,6 +27,7 @@ pub struct Client {
     pub server_addr: SocketAddr,
     pub session_id: Uuid,
     pub reassembly_buffer: Arc<Mutex<ReassemblyBuffer>>,
+    pub received_message_ids: Arc<Mutex<HashSet<u64>>>, // Added field for deduplication
 }
 
 // Implement Clone for Client
@@ -37,18 +39,20 @@ impl Clone for Client {
             server_addr: self.server_addr,
             session_id: self.session_id,
             reassembly_buffer: Arc::clone(&self.reassembly_buffer),
+            received_message_ids: Arc::clone(&self.received_message_ids), // Cloning the new field
         }
     }
 }
 
 #[async_trait]
 impl Tunnel for Client {
-    async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {  // mutable self
+    async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // mutable self
         let span = info_span!("client_start", session_id = %self.session_id);
         let _enter = span.enter();
         let local = "0.0.0.0:0"; // Bind to a random port
         let server = format!("{}:{}", self.config.server_addr, self.config.listen_port);
-        
+
         // Convert server address string to SocketAddr with error handling
         self.server_addr = match server.parse() {
             Ok(addr) => addr,
@@ -60,7 +64,8 @@ impl Tunnel for Client {
 
         let std_socket = StdUdpSocket::bind(local)
             .map_err(|e| format!("Failed to bind UDP socket on {}: {}", local, e))?;
-        std_socket.set_nonblocking(true)
+        std_socket
+            .set_nonblocking(true)
             .map_err(|e| format!("Failed to set non-blocking mode: {}", e))?;
         let socket2 = Socket::from(std_socket);
 
@@ -81,14 +86,20 @@ impl Tunnel for Client {
         info!("Client socket bound to {}", local);
 
         // Initialize reassembly buffer
-        self.reassembly_buffer = Arc::new(Mutex::new(ReassemblyBuffer::new(Duration::from_secs(10))));
+        self.reassembly_buffer =
+            Arc::new(Mutex::new(ReassemblyBuffer::new(Duration::from_secs(10))));
+        self.received_message_ids = Arc::new(Mutex::new(HashSet::new())); // Initialize the deduplication set
 
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let target = self.server_addr;
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), target, enable);
 
-        let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
+        let max_packet_size = self
+            .config
+            .udp
+            .max_packet_size
+            .unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
         let handshake = HandshakePayload {
             session_id: self.session_id,
@@ -107,7 +118,10 @@ impl Tunnel for Client {
 
         // Receiving response concurrently
         let response = self.receive_data().await?;
-        info!("Received from server: {}", String::from_utf8_lossy(&response));
+        info!(
+            "Received from server: {}",
+            String::from_utf8_lossy(&response)
+        );
 
         let heartbeat = b"heartbeat";
         let hb_ctx = MessageContext {
@@ -122,16 +136,24 @@ impl Tunnel for Client {
     }
 
     // Implementing send_data with rate limiting and packet splitting
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_data(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), addr, enable);
-        let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
-        
+        let max_packet_size = self
+            .config
+            .udp
+            .max_packet_size
+            .unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
+
         info!("Using max_packet_size: {}", max_packet_size); // Moved line
 
-        let socket = self.socket.lock().await;  // Lock the socket for sending
-        
+        let socket = self.socket.lock().await; // Lock the socket for sending
+
         let msg_id: u32 = rand::random(); // Updated to generate message ID
         let msg_ctx = MessageContext {
             message_id: msg_id as u64,
@@ -169,9 +191,14 @@ impl Tunnel for Client {
             socket.send_to(data, addr).await?;
         } else {
             // Update MTU-based packet sizing
-            let chunks = frame_chunks(data, max_packet_size - 8, msg_id, msg_ctx.message_type.to_u8());
+            let chunks = frame_chunks(
+                data,
+                max_packet_size - 8,
+                msg_id,
+                msg_ctx.message_type.to_u8(),
+            );
             PACKETS_TOTAL.inc_by(chunks.len() as f64); // Increment metric after preparing chunks
-            // Send each chunk
+                                                       // Send each chunk
             for chunk in chunks {
                 socket.send_to(&chunk, addr).await?;
             }
@@ -185,10 +212,14 @@ impl Tunnel for Client {
         let configured_mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(configured_mtu.into(), self.server_addr, enable);
-        let max_packet_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
+        let max_packet_size = self
+            .config
+            .udp
+            .max_packet_size
+            .unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
-        let socket = self.socket.lock().await;  // Lock the socket for receiving
-        let mut buf = vec![0u8; max_packet_size];  // Buffer for received data
+        let socket = self.socket.lock().await; // Lock the socket for receiving
+        let mut buf = vec![0u8; max_packet_size]; // Buffer for received data
         let (size, _) = socket.recv_from(&mut buf).await?;
 
         // Sanity check for received data size
@@ -207,17 +238,28 @@ impl Tunnel for Client {
         };
 
         // Decompress if compression is configured
-        let decompressed_data = decompress_data(
-            &reassembled_data,
-            &self.config.compression.algorithm
-        ).await?; // Added decompression
+        let decompressed_data =
+            decompress_data(&reassembled_data, &self.config.compression.algorithm).await?; // Added decompression
 
         let msg_ctx = MessageContext {
-            message_id: 0, // TODO: parse actual message_id from chunk when available
+            message_id: buffer.last_msg_id().unwrap_or(0).into(),
             session_id: self.session_id,
             size: decompressed_data.len(),
             message_type: MessageType::Data,
         };
+
+        // Deduplication check
+        let mut seen = self.received_message_ids.lock().await;
+        if seen.contains(&msg_ctx.message_id) {
+            PACKETS_TOTAL.inc(); // Increment received counter before returning
+            return Err("Duplicate message_id received".into());
+        }
+        seen.insert(msg_ctx.message_id);
+
+        if msg_ctx.message_type == MessageType::Ack {
+            trace!("Received ACK for message_id: {}", msg_ctx.message_id);
+            return Ok(vec![]); // Acknowledge and exit early
+        }
 
         let span = info_span!(
             "message_receive",
@@ -229,10 +271,16 @@ impl Tunnel for Client {
 
         match msg_ctx.message_type {
             MessageType::Control => {
-                trace!("Received Control message: {:?}", String::from_utf8_lossy(&reassembled_data));
+                trace!(
+                    "Received Control message: {:?}",
+                    String::from_utf8_lossy(&reassembled_data)
+                );
             }
             MessageType::Heartbeat => {
-                trace!("Received Heartbeat message: {:?}", String::from_utf8_lossy(&reassembled_data));
+                trace!(
+                    "Received Heartbeat message: {:?}",
+                    String::from_utf8_lossy(&reassembled_data)
+                );
             }
             _ => {}
         }

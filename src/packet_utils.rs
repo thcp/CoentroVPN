@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::time::{Duration, Instant};
 use tokio::task;
-use std::io::Read;
 
 pub fn split_packet(data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
     data.chunks(max_size).map(|chunk| chunk.to_vec()).collect()
@@ -37,25 +37,39 @@ impl PacketHeader {
         let chunk_id = u16::from_be_bytes([buf[4], buf[5]]);
         let total_chunks = u16::from_be_bytes([buf[6], buf[7]]);
         let message_type = buf[8];
-        let header = PacketHeader { msg_id, chunk_id, total_chunks, message_type };
+        let header = PacketHeader {
+            msg_id,
+            chunk_id,
+            total_chunks,
+            message_type,
+        };
         Some((header, &buf[9..]))
     }
 }
 
-pub fn frame_chunks(data: &[u8], max_chunk_size: usize, msg_id: u32, message_type: u8) -> Vec<Vec<u8>> {
+pub fn frame_chunks(
+    data: &[u8],
+    max_chunk_size: usize,
+    msg_id: u32,
+    message_type: u8,
+) -> Vec<Vec<u8>> {
     let chunks = data.chunks(max_chunk_size).collect::<Vec<_>>();
     let total_chunks = chunks.len() as u16;
-    chunks.into_iter().enumerate().map(|(i, chunk)| {
-        let header = PacketHeader {
-            msg_id,
-            chunk_id: i as u16,
-            total_chunks,
-            message_type,
-        };
-        let mut framed = header.serialize().to_vec();
-        framed.extend_from_slice(chunk);
-        framed
-    }).collect()
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let header = PacketHeader {
+                msg_id,
+                chunk_id: i as u16,
+                total_chunks,
+                message_type,
+            };
+            let mut framed = header.serialize().to_vec();
+            framed.extend_from_slice(chunk);
+            framed
+        })
+        .collect()
 }
 
 pub fn deframe_chunks(packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
@@ -94,6 +108,7 @@ pub fn deframe_chunks(packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
 pub struct ReassemblyBuffer {
     messages: HashMap<u32, MessageChunks>,
     expiration: Duration,
+    last_inserted_id: Option<u32>, // Added tracking for latest message ID
 }
 
 struct MessageChunks {
@@ -107,7 +122,12 @@ impl ReassemblyBuffer {
         Self {
             messages: HashMap::new(),
             expiration,
+            last_inserted_id: None,
         }
+    }
+
+    pub fn last_msg_id(&self) -> Option<u32> {
+        self.last_inserted_id
     }
 
     pub fn insert(&mut self, packet: Vec<u8>) -> Option<Vec<u8>> {
@@ -116,11 +136,16 @@ impl ReassemblyBuffer {
             None => return None,
         };
 
-        let msg = self.messages.entry(header.msg_id).or_insert_with(|| MessageChunks {
-            parts: BTreeMap::new(),
-            total_chunks: header.total_chunks,
-            last_update: Instant::now(),
-        });
+        self.last_inserted_id = Some(header.msg_id); // Track the most recent message ID
+
+        let msg = self
+            .messages
+            .entry(header.msg_id)
+            .or_insert_with(|| MessageChunks {
+                parts: BTreeMap::new(),
+                total_chunks: header.total_chunks,
+                last_update: Instant::now(),
+            });
 
         msg.parts.insert(header.chunk_id, payload.to_vec());
         msg.last_update = Instant::now();
@@ -144,7 +169,8 @@ impl ReassemblyBuffer {
     pub fn purge_expired(&mut self) {
         let now = Instant::now();
         let before = self.messages.len();
-        self.messages.retain(|_, v| now.duration_since(v.last_update) < self.expiration);
+        self.messages
+            .retain(|_, v| now.duration_since(v.last_update) < self.expiration);
         let after = self.messages.len();
         if before != after {
             tracing::debug!("Purged {} expired reassembly entries", before - after);

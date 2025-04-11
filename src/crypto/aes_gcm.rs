@@ -1,6 +1,5 @@
+use aes_gcm::aead::{rand_core::RngCore, Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key, Nonce}; // Or `Aes128Gcm`
-use aes_gcm::aead::{Aead, KeyInit, OsRng, rand_core::RngCore};
-
 
 pub struct AesGcmEncryptor {
     cipher: Aes256Gcm,
@@ -13,17 +12,38 @@ impl AesGcmEncryptor {
         Self { cipher }
     }
 
-    pub fn encrypt(&self, plaintext: &[u8], aad: &[u8]) -> Result<(Vec<u8>, [u8; 12]), aes_gcm::Error> {
+    pub fn encrypt(
+        &self,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<(Vec<u8>, [u8; 12]), aes_gcm::Error> {
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes); // 96-bits; unique per message
-        let ciphertext = self.cipher.encrypt(nonce, aes_gcm::aead::Payload { msg: plaintext, aad })?;
+        let ciphertext = self.cipher.encrypt(
+            nonce,
+            aes_gcm::aead::Payload {
+                msg: plaintext,
+                aad,
+            },
+        )?;
         Ok((ciphertext, nonce_bytes))
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8], nonce_bytes: &[u8; 12], aad: &[u8]) -> Result<Vec<u8>, aes_gcm::Error> {
+    pub fn decrypt(
+        &self,
+        ciphertext: &[u8],
+        nonce_bytes: &[u8; 12],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, aes_gcm::Error> {
         let nonce = Nonce::from_slice(nonce_bytes);
-        let plaintext = self.cipher.decrypt(nonce, aes_gcm::aead::Payload { msg: ciphertext, aad })?;
+        let plaintext = self.cipher.decrypt(
+            nonce,
+            aes_gcm::aead::Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )?;
         Ok(plaintext)
     }
 }

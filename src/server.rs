@@ -1,13 +1,17 @@
-use async_trait::async_trait;
 use crate::config::Config;
-use crate::context::{Direction, ChunkContext, MessageContext, MessageType, ControlPayload, HandshakePayload}; // Added ControlPayload and HandshakePayload
+use crate::context::{
+    ChunkContext, ControlPayload, Direction, HandshakePayload, MessageContext, MessageType,
+}; // Added ControlPayload and HandshakePayload
 use crate::net::{calculate_max_payload_size, discover_path_mtu};
-use crate::packet_utils::{split_packet, frame_chunks, deframe_chunks, ReassemblyBuffer}; // Added ReassemblyBuffer
-use crate::tunnel::Tunnel;
+use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
 use crate::packet_utils::decompress_data;
+use crate::packet_utils::{deframe_chunks, frame_chunks, split_packet, ReassemblyBuffer}; // Added ReassemblyBuffer
+use crate::tunnel::Tunnel;
+use async_trait::async_trait;
 use bincode::config::standard; // Added bincode imports
 use bincode::serde::decode_from_slice as deserialize; // Added bincode imports
 use socket2::Socket;
+use std::collections::HashSet; // Added for deduplication
 use std::fmt;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
@@ -15,17 +19,18 @@ use std::sync::Arc;
 use std::time::Duration; // Included Duration
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use tokio::time::{sleep}; // For rate limiting
-use tracing::{info, error, debug, trace}; // Updated to use structured logging
+use tokio::sync::Mutex as TokioMutex;
+use tokio::time::sleep; // For rate limiting
 use tracing::info_span;
-use uuid::Uuid;
-use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
+use tracing::{debug, error, info, trace}; // Updated to use structured logging
+use uuid::Uuid; // Added for deduplication
 
 pub struct Server {
     pub config: Config,
     pub socket: Arc<Mutex<UdpSocket>>,
-    pub session_id: Uuid, // Updated struct
+    pub session_id: Uuid,                                // Updated struct
     pub reassembly_buffer: Arc<Mutex<ReassemblyBuffer>>, // Added reassembly_buffer
+    pub received_message_ids: Arc<Mutex<HashSet<u64>>>,  // Added for deduplication
 }
 
 #[async_trait]
@@ -41,7 +46,8 @@ impl Tunnel for Server {
 
         let std_socket = StdUdpSocket::bind(&addr)
             .map_err(|e| format!("Failed to bind UDP socket on {}: {}", addr, e))?;
-        std_socket.set_nonblocking(true)
+        std_socket
+            .set_nonblocking(true)
             .map_err(|e| format!("Failed to set non-blocking mode on {}: {}", addr, e))?;
         let socket2 = Socket::from(std_socket);
 
@@ -61,13 +67,19 @@ impl Tunnel for Server {
         let socket = Arc::new(Mutex::new(socket));
         self.socket = socket;
 
-        self.reassembly_buffer = Arc::new(Mutex::new(ReassemblyBuffer::new(Duration::from_secs(10)))); // Added reassembly_buffer initialization
+        self.reassembly_buffer =
+            Arc::new(Mutex::new(ReassemblyBuffer::new(Duration::from_secs(10)))); // Added reassembly_buffer initialization
+        self.received_message_ids = Arc::new(Mutex::new(HashSet::new())); // Added for deduplication
 
         // Perform MTU discovery once
         let mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable_discovery = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(mtu.into(), addr.parse()?, enable_discovery);
-        let max_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
+        let max_size = self
+            .config
+            .udp
+            .max_packet_size
+            .unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
 
         info!(
             "Server initialized with discovered MTU = {}, max_packet_size = {}",
@@ -92,7 +104,12 @@ impl Tunnel for Server {
                 }
             };
 
-            info!("Received {} bytes from {}: {:?}", received_data.len(), peer, String::from_utf8_lossy(&received_data));
+            info!(
+                "Received {} bytes from {}: {:?}",
+                received_data.len(),
+                peer,
+                String::from_utf8_lossy(&received_data)
+            );
 
             if let Err(e) = self.send_data(&received_data, peer).await {
                 error!("Failed to send response to {}: {}", peer, e);
@@ -100,7 +117,11 @@ impl Tunnel for Server {
         }
     }
 
-    async fn send_data(&self, data: &[u8], addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_data(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.lock().await;
 
         let msg_id: u32 = rand::random(); // Added random message ID
@@ -134,8 +155,12 @@ impl Tunnel for Server {
         let mtu = self.config.udp.mtu.unwrap_or(1500);
         let enable_discovery = self.config.udp.enable_mtu_discovery.unwrap_or(false);
         let discovered_mtu = discover_path_mtu(mtu.into(), addr, enable_discovery);
-        let max_size = self.config.udp.max_packet_size.unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
-        
+        let max_size = self
+            .config
+            .udp
+            .max_packet_size
+            .unwrap_or_else(|| calculate_max_payload_size(discovered_mtu));
+
         info!("Using max_packet_size: {}", max_size); // Moved line here
 
         let chunks = frame_chunks(&data, max_size - 8, msg_id, msg_ctx.message_type.to_u8());
@@ -149,7 +174,8 @@ impl Tunnel for Server {
             "Prepared message for sending"
         );
 
-        for (chunk_id, chunk) in chunks.into_iter().enumerate() { // Updated for loop
+        for (chunk_id, chunk) in chunks.into_iter().enumerate() {
+            // Updated for loop
             let ctx = ChunkContext {
                 message_id: msg_id as u64,
                 chunk_id: chunk_id as u32,
@@ -173,7 +199,7 @@ impl Tunnel for Server {
     }
 
     async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        let socket = self.socket.lock().await;  // Lock the socket for receiving
+        let socket = self.socket.lock().await; // Lock the socket for receiving
         let mut buf = vec![0u8; 1024];
         let (size, _) = socket.recv_from(&mut buf).await?;
 
@@ -188,11 +214,22 @@ impl Tunnel for Server {
         };
 
         let msg_ctx = MessageContext {
-            message_id: 0, // TODO: parse actual message_id from chunk when available
+            message_id: buffer.last_msg_id().unwrap_or(0).into(),
             session_id: self.session_id,
             size: reassembled_data.len(),
             message_type: MessageType::Data,
         };
+        if msg_ctx.message_type == MessageType::Ack {
+            trace!("Received ACK for message_id: {}", msg_ctx.message_id);
+            return Ok(vec![]); // Acknowledge and exit early
+        }
+
+        let mut seen = self.received_message_ids.lock().await; // Added deduplication check
+        if seen.contains(&msg_ctx.message_id) {
+            PACKETS_TOTAL.inc(); // Increment total packets
+            return Err("Duplicate message_id received".into());
+        }
+        seen.insert(msg_ctx.message_id); // Insert message_id into the set
 
         let span = info_span!(
             "message_receive",
@@ -202,13 +239,14 @@ impl Tunnel for Server {
         );
         let _enter = span.enter();
 
-         trace!( // Added tracing
+        trace!( // Added tracing
             direction = %Direction::Inbound,
             size = reassembled_data.len(),
             "Received and decompressed message"
         );
 
-        debug!( // Added debug logging
+        debug!(
+            // Added debug logging
             size = reassembled_data.len(),
             "Successfully received and reassembled message"
         );
@@ -225,7 +263,10 @@ impl Tunnel for Server {
                 }
             }
             MessageType::Heartbeat => {
-                match deserialize::<crate::context::HeartbeatPayload, _>(&reassembled_data, standard()) {
+                match deserialize::<crate::context::HeartbeatPayload, _>(
+                    &reassembled_data,
+                    standard(),
+                ) {
                     Ok((payload, _)) => {
                         trace!("Deserialized HeartbeatPayload: {:?}", payload);
                     }
@@ -252,8 +293,7 @@ impl Tunnel for Server {
     }
 }
 
-impl Server {
-}
+impl Server {}
 
 impl fmt::Display for MessageType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -262,6 +302,7 @@ impl fmt::Display for MessageType {
             MessageType::Data => write!(f, "data"),
             MessageType::Handshake => write!(f, "handshake"),
             MessageType::Heartbeat => write!(f, "heartbeat"),
+            MessageType::Ack => write!(f, "ack"),
             MessageType::Unknown(code) => write!(f, "unknown({})", code),
         }
     }

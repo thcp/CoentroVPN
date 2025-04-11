@@ -1,4 +1,4 @@
-use coentrovpn::packet_utils::{PacketHeader, frame_chunks, deframe_chunks, ReassemblyBuffer};
+use coentrovpn::packet_utils::{deframe_chunks, frame_chunks, PacketHeader, ReassemblyBuffer};
 use std::collections::HashSet;
 use std::time::Duration;
 
