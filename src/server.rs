@@ -17,6 +17,8 @@ use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::sync::Arc;
 use std::time::Duration; // Included Duration
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
@@ -24,8 +26,6 @@ use tokio::time::sleep; // For rate limiting
 use tracing::info_span;
 use tracing::{debug, error, info, trace}; // Updated to use structured logging
 use uuid::Uuid; // Added for deduplication
-use tokio::net::TcpListener;
-use tokio::io::AsyncWriteExt;
 
 pub struct Server {
     pub config: Config,
@@ -36,7 +36,10 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn start_health_checks(&self, health_addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start_health_checks(
+        &self,
+        health_addr: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(health_addr).await?;
         info!("Health check server running on {}", health_addr);
 
@@ -114,12 +117,7 @@ impl Tunnel for Server {
         );
 
         // Validate and use health_addr from Config.toml
-        let health_addr: String = self
-            .config
-            .observability
-            .health_addr
-            .clone();
-
+        let health_addr: String = self.config.observability.health_addr.clone();
 
         self.start_health_checks(&health_addr).await?;
 

@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::context::{MessageContext, MessageType, PendingMessage, SlidingWindow};
 use crate::crypto::aes_gcm::AesGcmEncryptor;
 use crate::observability::{DUPLICATES_TOTAL, PACKETS_TOTAL, REASSEMBLIES_TOTAL, RETRIES_TOTAL};
+use crate::observability::{LATENCY_HISTOGRAM, PACKET_LOSS_GAUGE, THROUGHPUT_GAUGE};
 use crate::packet_utils::{
     compress_data, decompress_data, frame_chunks, PacketHeader, ReassemblyBuffer,
 };
@@ -16,7 +17,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task;
 use tracing::{debug, info, trace};
-use crate::observability::{LATENCY_HISTOGRAM, PACKET_LOSS_GAUGE, THROUGHPUT_GAUGE};
 
 #[async_trait::async_trait]
 pub trait Tunnel: Send + Sync {

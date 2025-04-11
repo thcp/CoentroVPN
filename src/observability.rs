@@ -1,6 +1,9 @@
 use axum::{routing::get, Router};
 use lazy_static::lazy_static;
-use prometheus::{Counter, Encoder, Registry, TextEncoder, IntCounter, IntGauge, Histogram, register_int_counter, register_int_gauge, register_histogram};
+use prometheus::{
+    register_histogram, register_int_counter, register_int_gauge, Counter, Encoder, Histogram,
+    IntCounter, IntGauge, Registry, TextEncoder,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -12,42 +15,27 @@ pub struct HealthState {
 
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
-    pub static ref PACKETS_TOTAL: IntCounter = register_int_counter!(
-        "packets_total",
-        "Total number of packets processed"
-    )
-    .unwrap();
-
+    pub static ref PACKETS_TOTAL: IntCounter =
+        register_int_counter!("packets_total", "Total number of packets processed").unwrap();
     pub static ref DUPLICATES_TOTAL: IntCounter = register_int_counter!(
         "duplicates_total",
         "Total number of duplicate packets detected"
     )
     .unwrap();
-
     pub static ref REASSEMBLIES_TOTAL: IntCounter = register_int_counter!(
         "reassemblies_total",
         "Total number of packet reassemblies completed"
     )
     .unwrap();
-
-    pub static ref RETRIES_TOTAL: IntCounter = register_int_counter!(
-        "retries_total",
-        "Total number of packet retries"
-    )
-    .unwrap();
-
+    pub static ref RETRIES_TOTAL: IntCounter =
+        register_int_counter!("retries_total", "Total number of packet retries").unwrap();
     pub static ref LATENCY_HISTOGRAM: Histogram = register_histogram!(
         "packet_latency_seconds",
         "Histogram of packet processing latency in seconds"
     )
     .unwrap();
-
-    pub static ref PACKET_LOSS_GAUGE: IntGauge = register_int_gauge!(
-        "packet_loss",
-        "Current packet loss percentage"
-    )
-    .unwrap();
-
+    pub static ref PACKET_LOSS_GAUGE: IntGauge =
+        register_int_gauge!("packet_loss", "Current packet loss percentage").unwrap();
     pub static ref THROUGHPUT_GAUGE: IntGauge = register_int_gauge!(
         "throughput_bytes_per_second",
         "Current throughput in bytes per second"
