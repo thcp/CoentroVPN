@@ -10,11 +10,14 @@ log_level = "info"  # Possible values: "debug", "info", "error", etc.
 [observability]
 metrics_addr = "127.0.0.1:9100"  # Address for metrics server
 health_addr = "127.0.0.1:8080"   # Address for health server
-
+enable_metrics = true            # Enable or disable metrics collection
 
 [compression]
-algorithm = "lz4"  # Possible values: "lz4", "zstd"
-min_compression_size = 512  # Only compress messages larger than this size (in bytes)
+# Algorithm to use for compression (e.g., "gzip", "zstd")
+algorithm = "gzip"
+
+# Minimum size (in bytes) for payloads to be compressed
+min_compression_size = 512
 
 [udp]
 mtu = 1500  # Maximum Transmission Unit (MTU), adjust based on network environment
