@@ -197,7 +197,7 @@ impl Tunnel for Client {
                 msg_id,
                 msg_ctx.message_type.to_u8(),
             );
-            PACKETS_TOTAL.inc_by(chunks.len() as f64); // Increment metric after preparing chunks
+            PACKETS_TOTAL.inc_by(chunks.len() as u64); // Increment metric after preparing chunks
                                                        // Send each chunk
             for chunk in chunks {
                 socket.send_to(&chunk, addr).await?;
