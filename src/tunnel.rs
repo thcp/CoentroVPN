@@ -16,6 +16,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task;
 use tracing::{debug, info, trace};
+use crate::observability::{LATENCY_HISTOGRAM, PACKET_LOSS_GAUGE, THROUGHPUT_GAUGE};
 
 #[async_trait::async_trait]
 pub trait Tunnel: Send + Sync {
@@ -151,7 +152,7 @@ impl TunnelImpl {
             msg_ctx.message_id as u32,
             msg_ctx.message_type.to_u8(),
         ); // example MTU logic
-        PACKETS_TOTAL.inc_by(chunks.len() as f64);
+        PACKETS_TOTAL.inc_by(chunks.len() as u64);
 
         let mut pending = self.pending_messages.lock().await;
         pending.insert(
@@ -198,10 +199,14 @@ impl TunnelImpl {
     }
 
     pub async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let start_time = Instant::now(); // Start latency timer
         let socket = self.socket.lock().await;
         let mut buf = [0u8; 1500];
         let (len, peer) = socket.recv_from(&mut buf).await?;
         let received_payload = &buf[..len];
+
+        // Update throughput metric
+        THROUGHPUT_GAUGE.set(len as i64);
 
         let (header, payload) =
             PacketHeader::deserialize(received_payload).ok_or("Failed to parse packet header")?;
@@ -219,6 +224,7 @@ impl TunnelImpl {
         let mut dedupe_set = self.received_message_ids.lock().await;
         if dedupe_set.contains(&(header.msg_id as u64)) {
             DUPLICATES_TOTAL.inc();
+            PACKET_LOSS_GAUGE.inc(); // Increment packet loss gauge for duplicates
             return Err("Duplicate message detected".into());
         }
         dedupe_set.insert(header.msg_id as u64);
@@ -316,6 +322,7 @@ impl TunnelImpl {
                 let _ = socket.send_to(&ack_packet, peer).await;
             }
 
+            LATENCY_HISTOGRAM.observe(start_time.elapsed().as_secs_f64()); // Record latency
             return Ok(final_payload);
         } else {
             return Err("Incomplete message: awaiting more chunks".into());

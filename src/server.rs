@@ -24,6 +24,8 @@ use tokio::time::sleep; // For rate limiting
 use tracing::info_span;
 use tracing::{debug, error, info, trace}; // Updated to use structured logging
 use uuid::Uuid; // Added for deduplication
+use tokio::net::TcpListener;
+use tokio::io::AsyncWriteExt;
 
 pub struct Server {
     pub config: Config,
@@ -31,6 +33,31 @@ pub struct Server {
     pub session_id: Uuid,                                // Updated struct
     pub reassembly_buffer: Arc<Mutex<ReassemblyBuffer>>, // Added reassembly_buffer
     pub received_message_ids: Arc<Mutex<HashSet<u64>>>,  // Added for deduplication
+}
+
+impl Server {
+    pub async fn start_health_checks(&self, health_addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let listener = TcpListener::bind(health_addr).await?;
+        info!("Health check server running on {}", health_addr);
+
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((mut socket, _)) => {
+                        let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+                        if let Err(e) = socket.write_all(response.as_bytes()).await {
+                            error!("Failed to respond to health check: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to accept health check connection: {}", e);
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -85,6 +112,16 @@ impl Tunnel for Server {
             "Server initialized with discovered MTU = {}, max_packet_size = {}",
             discovered_mtu, max_size
         );
+
+        // Validate and use health_addr from Config.toml
+        let health_addr: String = self
+            .config
+            .observability
+            .health_addr
+            .clone();
+
+
+        self.start_health_checks(&health_addr).await?;
 
         loop {
             let mut buf = [0u8; 1500];
@@ -164,7 +201,7 @@ impl Tunnel for Server {
         info!("Using max_packet_size: {}", max_size); // Moved line here
 
         let chunks = frame_chunks(&data, max_size - 8, msg_id, msg_ctx.message_type.to_u8());
-        PACKETS_TOTAL.inc_by(chunks.len() as f64);
+        PACKETS_TOTAL.inc_by(chunks.len() as u64);
         let total_chunks = chunks.len() as u32;
 
         debug!(
@@ -292,8 +329,6 @@ impl Tunnel for Server {
         Ok(reassembled_data) // Use reassembled_data here
     }
 }
-
-impl Server {}
 
 impl fmt::Display for MessageType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
