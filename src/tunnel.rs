@@ -187,7 +187,7 @@ impl TunnelImpl {
     pub async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let socket = self.socket.lock().await;
         let mut buf = [0u8; 1500];
-        let (len, _peer) = socket.recv_from(&mut buf).await?;
+        let (len, peer) = socket.recv_from(&mut buf).await?;
         let received_payload = &buf[..len];
 
         let (header, payload) =
@@ -209,6 +209,19 @@ impl TunnelImpl {
             return Err("Duplicate message detected".into());
         }
         dedupe_set.insert(header.msg_id as u64);
+
+        if matches!(msg_type, MessageType::Ack) {
+            let mut pending = self.pending_messages.lock().await;
+            if pending.remove(&(header.msg_id as u64)).is_some() {
+                let mut window = self.sliding_window.lock().await;
+                window.inflight.retain(|id| *id != header.msg_id as u64);
+                trace!(
+                    "ACK received — message_id {} removed from resend queue",
+                    header.msg_id
+                );
+            }
+            return Ok(vec![]); // Early return for ACK messages
+        }
 
         let mut buffer = self.reassembly_buffer.lock().await;
         buffer.purge_expired();
@@ -287,19 +300,7 @@ impl TunnelImpl {
                     total_chunks: 1,
                 };
                 let ack_packet = ack_header.serialize();
-                let _ = socket.send_to(&ack_packet, _peer).await;
-            }
-
-            if matches!(msg_type, MessageType::Ack) {
-                let mut pending = self.pending_messages.lock().await;
-                if pending.remove(&(header.msg_id as u64)).is_some() {
-                    let mut window = self.sliding_window.lock().await;
-                    window.inflight.retain(|id| *id != header.msg_id as u64);
-                    trace!(
-                        "ACK received — message_id {} removed from resend queue",
-                        header.msg_id
-                    );
-                }
+                let _ = socket.send_to(&ack_packet, peer).await;
             }
 
             return Ok(final_payload);
