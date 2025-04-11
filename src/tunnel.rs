@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::context::{MessageContext, MessageType, PendingMessage, SlidingWindow};
 use crate::crypto::aes_gcm::AesGcmEncryptor;
+use crate::crypto::x25519::X25519KeyPair;
 use crate::observability::{DUPLICATES_TOTAL, PACKETS_TOTAL, REASSEMBLIES_TOTAL, RETRIES_TOTAL};
 use crate::observability::{LATENCY_HISTOGRAM, PACKET_LOSS_GAUGE, THROUGHPUT_GAUGE};
 use crate::packet_utils::{
@@ -398,5 +399,33 @@ impl TunnelImpl {
                 });
             }
         });
+    }
+
+    pub async fn perform_key_exchange(
+        &self,
+        peer_public_key: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let key_pair = X25519KeyPair::generate();
+        let peer_public_key = PublicKey::from(peer_public_key.try_into()?);
+        let shared_secret = key_pair.derive_shared_secret(&peer_public_key);
+
+        debug!("Shared secret derived successfully");
+
+        // Return the public key to send to the peer
+        Ok(key_pair.public_key.as_bytes().to_vec())
+    }
+
+    pub async fn handle_handshake(
+        &self,
+        peer_public_key: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let local_public_key = self.perform_key_exchange(peer_public_key).await?;
+        debug!("Sending local public key to peer");
+
+        // Send the local public key to the peer (implementation depends on your protocol)
+        let socket = self.socket.lock().await;
+        socket.send_to(&local_public_key, "peer_address_placeholder").await?;
+
+        Ok(())
     }
 }
