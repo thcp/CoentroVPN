@@ -1,10 +1,12 @@
+use crate::observability::{init_metrics, start_metrics_server};
+use crate::utils::bind_socket; // Import the centralized binding function
 use clap::Parser;
 use coentrovpn::client::Client;
 use coentrovpn::config::Config;
 use coentrovpn::logging::init_logging;
 use coentrovpn::observability::{init_metrics, start_health_server, HealthState};
 use coentrovpn::packet_utils::ReassemblyBuffer;
-use coentrovpn::server::Server;
+use coentrovpn::server::{start_server, Server};
 use coentrovpn::tunnel::Tunnel;
 use num_cpus;
 use std::collections::HashSet;
@@ -54,53 +56,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
         debug!("Log level set to: {}", log_level);
 
         // Initialize metrics
-        init_metrics();
+        let metrics_addr = config.observability.metrics_addr.clone();
+        let enable_metrics = config.observability.enable_metrics;
+
+        if enable_metrics {
+            tokio::spawn(async move {
+                init_metrics().await;
+                start_metrics_server(&metrics_addr)
+                    .await
+                    .expect("Failed to start metrics server");
+            });
+        }
 
         // Initialize health state and server
         let health_state = Arc::new(HealthState::new());
         let health_addr = config.observability.health_addr.parse()?;
-        tokio::spawn(start_health_server(health_addr, Arc::clone(&health_state)));
+        tokio::spawn(start_health_server(health_addr));
         info!("Metrics available at http://{}/metrics", health_addr);
-
-        // Create a UDP socket and wrap it in an Arc<Mutex>
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        let socket = Arc::new(Mutex::new(socket));
 
         // Set the health state to ready after initialization
         health_state.set_ready().await;
 
-        // Instantiate Client or Server based on mode
-        match config.mode.as_str() {
-            "server" => {
-                let mut server = Server {
-                    config,
-                    socket: Arc::clone(&socket),
-                    session_id: Uuid::new_v4(),
-                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(
-                        std::time::Duration::from_secs(10),
-                    ))),
-                    received_message_ids: Arc::new(Mutex::new(HashSet::new())),
-                };
-                server.start().await?;
-            }
-            "client" => {
-                let server_addr = config.server_addr.parse()?;
-                let mut client = Client {
-                    config,
-                    socket: Arc::clone(&socket),
-                    server_addr,
-                    session_id: Uuid::new_v4(),
-                    reassembly_buffer: Arc::new(Mutex::new(ReassemblyBuffer::new(
-                        std::time::Duration::from_secs(10),
-                    ))),
-                    received_message_ids: Arc::new(Mutex::new(HashSet::new())),
-                };
-                client.start().await?;
-            }
-            _ => {
-                return Err("Invalid mode in config. Use 'client' or 'server'.".into());
-            }
-        }
+        // Debug statement to confirm values
+        println!("Starting server on {}:{}", listen_addr, listen_port);
+
+        // Start the server
+        let listen_addr = config.listen_addr.clone();
+        let listen_port = config.listen_port;
+        start_server().expect("Failed to start server");
 
         Ok(())
     })

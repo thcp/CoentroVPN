@@ -1,10 +1,11 @@
 use crate::config::Config;
 use crate::context::{ControlPayload, HandshakePayload, MessageContext, MessageType};
-use crate::net::{calculate_max_payload_size, discover_path_mtu};
+use crate::net::{calculate_max_payload_size, discover_mtu, discover_path_mtu};
 use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
 use crate::packet_utils::decompress_data;
 use crate::packet_utils::{deframe_chunks, frame_chunks, ReassemblyBuffer};
 use crate::tunnel::Tunnel;
+use crate::utils::bind_socket; // Import the centralized binding function
 use async_trait::async_trait;
 use bincode::config::standard;
 use bincode::serde::encode_to_vec as serialize;
@@ -288,4 +289,76 @@ impl Tunnel for Client {
         PACKETS_TOTAL.inc(); // Increment received counter before returning
         Ok(decompressed_data) // Updated return value
     }
+}
+
+pub fn connect_to_server() {
+    let config = Config::builder()
+        .add_source(config::File::with_name("Config.toml"))
+        .build()
+        .expect("Failed to load configuration");
+
+    let mtu = discover_mtu(&config);
+    println!("Using MTU: {}", mtu);
+
+    let server_addr = config
+        .get_string("server_addr")
+        .expect("Missing server_addr");
+
+    let client_socket =
+        bind_socket(&format!("{}:0", server_addr)).expect("Failed to bind client socket");
+
+    let mut paused = false;
+
+    // Example client loop
+    loop {
+        if paused {
+            // Wait for a signal from the server to resume
+            if check_server_ready_signal() {
+                paused = false;
+                println!("Resuming data transmission...");
+            }
+            continue;
+        }
+
+        // Prepare data to send
+        let data = b"Hello, server!"; // Example payload
+        let max_packet_size = config.get_int("udp.max_packet_size").unwrap_or(1400) as usize;
+
+        // Check if data fits within max packet size
+        if data.len() <= max_packet_size {
+            client_socket
+                .send_to(data, server_addr.clone())
+                .expect("Failed to send data");
+            println!("Sent data: {:?}", String::from_utf8_lossy(data));
+        } else {
+            // Split data into chunks and send each chunk
+            let chunks = frame_chunks(data, max_packet_size - 8, 1, 0); // Example message ID and type
+            for chunk in chunks {
+                client_socket
+                    .send_to(&chunk, server_addr.clone())
+                    .expect("Failed to send chunk");
+                println!("Sent chunk: {:?}", chunk);
+            }
+        }
+
+        // Simulate receiving a backpressure signal
+        if received_backpressure_signal() {
+            paused = true;
+            println!("Paused sending due to backpressure signal from server");
+        }
+    }
+}
+
+fn received_backpressure_signal() -> bool {
+    // Logic to detect backpressure signal from the server
+    // For now, simulate backpressure randomly
+    use rand::Rng;
+    rand::thread_rng().gen_bool(0.1) // 10% chance of backpressure
+}
+
+fn check_server_ready_signal() -> bool {
+    // Logic to detect readiness signal from the server
+    // For now, simulate readiness randomly
+    use rand::Rng;
+    rand::thread_rng().gen_bool(0.9) // 90% chance of readiness
 }

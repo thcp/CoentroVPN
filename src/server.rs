@@ -2,19 +2,23 @@ use crate::config::Config;
 use crate::context::{
     ChunkContext, ControlPayload, Direction, HandshakePayload, MessageContext, MessageType,
 }; // Added ControlPayload and HandshakePayload
-use crate::net::{calculate_max_payload_size, discover_path_mtu};
+use crate::net::{calculate_max_payload_size, discover_mtu, discover_path_mtu};
 use crate::observability::PACKETS_TOTAL; // Added import for Prometheus counter
 use crate::packet_utils::decompress_data;
 use crate::packet_utils::{deframe_chunks, frame_chunks, split_packet, ReassemblyBuffer}; // Added ReassemblyBuffer
 use crate::tunnel::Tunnel;
+use crate::utils::bind_socket; // Import the centralized binding function
 use async_trait::async_trait;
 use bincode::config::standard; // Added bincode imports
 use bincode::serde::decode_from_slice as deserialize; // Added bincode imports
+use coentrovpn::utils::initialize_reassembly_buffer;
+
 use socket2::Socket;
 use std::collections::HashSet; // Added for deduplication
 use std::fmt;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
+use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::Duration; // Included Duration
 use tokio::io::AsyncWriteExt;
@@ -25,7 +29,7 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::time::sleep; // For rate limiting
 use tracing::info_span;
 use tracing::{debug, error, info, trace}; // Updated to use structured logging
-use uuid::Uuid; // Added for deduplication
+use uuid::Uuid; // Added for deduplication // Import shared utility
 
 pub struct Server {
     pub config: Config,
@@ -338,5 +342,65 @@ impl fmt::Display for MessageType {
             MessageType::Ack => write!(f, "ack"),
             MessageType::Unknown(code) => write!(f, "unknown({})", code),
         }
+    }
+}
+
+pub fn start_server() {
+    let config = Config::builder()
+        .add_source(config::File::with_name("Config.toml"))
+        .build()
+        .expect("Failed to load configuration");
+
+    let mtu = discover_mtu(&config);
+    println!("Using MTU: {}", mtu);
+
+    let listen_addr = config
+        .get_string("listen_addr")
+        .expect("Missing listen_addr");
+    let listen_port = config.get_int("listen_port").expect("Missing listen_port");
+
+    let server_socket = bind_socket(&format!("{}:{}", listen_addr, listen_port))
+        .expect("Failed to bind server socket");
+
+    let flow_control_threshold =
+        config.get_int("udp.flow_control_threshold").unwrap_or(500) as usize;
+
+    let mut buffer_usage = 0;
+
+    // Example server loop
+    loop {
+        // ...existing code for receiving packets...
+        buffer_usage += received_packet.len();
+
+        if buffer_usage > flow_control_threshold {
+            // Send backpressure signal to the client
+            send_backpressure_signal();
+        }
+
+        // Process the packet and reduce buffer usage
+        buffer_usage -= processed_packet_size;
+    }
+}
+
+fn send_backpressure_signal() {
+    // Logic to send a backpressure signal to the client
+    println!("Backpressure signal sent to client");
+}
+
+pub fn start_server(addr: &str, config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    let socket = UdpSocket::bind(addr)?;
+    println!("Server listening on {}", addr);
+
+    let mtu = discover_mtu(&config);
+    println!("Using MTU: {}", mtu);
+
+    // Example server loop
+    loop {
+        let mut buf = vec![0; mtu];
+        let (size, src) = socket.recv_from(&mut buf)?;
+        println!("Received {} bytes from {}", size, src);
+
+        // Process the packet (placeholder for actual logic)
+        // ...existing code...
     }
 }

@@ -1,4 +1,4 @@
-use coentrovpn::packet_utils::{compress_data, decompress_data};
+use coentro_vpn::packet_utils::{compress_data, decompress_data};
 use tokio::runtime::Runtime;
 
 #[test]
@@ -44,4 +44,48 @@ fn test_invalid_algorithm_fails() {
         let decompressed = decompress_data(original, "unsupported_algo").await;
         assert!(decompressed.is_err(), "Should fail with unknown algorithm");
     });
+}
+
+#[tokio::test]
+async fn test_compression_and_decompression() {
+    let data = b"Test data for compression";
+    let algorithm = "gzip";
+
+    let compressed = compress_data(data, algorithm)
+        .await
+        .expect("Compression failed");
+    assert!(
+        compressed.len() < data.len(),
+        "Compressed data should be smaller than original"
+    );
+
+    let decompressed = decompress_data(&compressed, algorithm)
+        .await
+        .expect("Decompression failed");
+    assert_eq!(
+        decompressed, data,
+        "Decompressed data should match original"
+    );
+}
+
+#[tokio::test]
+async fn test_compression_with_small_data() {
+    let data = b"Short";
+    let algorithm = "gzip";
+
+    let compressed = compress_data(data, algorithm)
+        .await
+        .expect("Compression failed");
+    assert!(
+        compressed.len() >= data.len(),
+        "Compressed data may not be smaller for small inputs"
+    );
+
+    let decompressed = decompress_data(&compressed, algorithm)
+        .await
+        .expect("Decompression failed");
+    assert_eq!(
+        decompressed, data,
+        "Decompressed data should match original"
+    );
 }

@@ -1,22 +1,20 @@
-use crate::config::Config;
+use crate::config::Config as TunnelConfig;
 use crate::context::{MessageContext, MessageType, PendingMessage, SlidingWindow};
-use crate::crypto::aes_gcm::AesGcmEncryptor;
-use crate::crypto::x25519::X25519KeyPair;
 use crate::observability::{DUPLICATES_TOTAL, PACKETS_TOTAL, REASSEMBLIES_TOTAL, RETRIES_TOTAL};
 use crate::observability::{LATENCY_HISTOGRAM, PACKET_LOSS_GAUGE, THROUGHPUT_GAUGE};
 use crate::packet_utils::{
     compress_data, decompress_data, frame_chunks, PacketHeader, ReassemblyBuffer,
 };
+use crate::net::discover_mtu; // Use centralized MTU discovery logic
+use crate::config::Config; // Import Config type
 use bincode::config::standard;
 use bincode::serde::{decode_from_slice as deserialize, encode_to_vec as serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex as TokioMutex;
-use tokio::task;
 use tracing::{debug, info, trace};
 
 #[async_trait::async_trait]
@@ -32,7 +30,6 @@ pub trait Tunnel: Send + Sync {
 
 pub struct TunnelImpl {
     pub config: Config,
-    encryptor: Option<AesGcmEncryptor>,
     socket: Arc<tokio::sync::Mutex<UdpSocket>>,
     pub reassembly_buffer: Arc<tokio::sync::Mutex<ReassemblyBuffer>>,
     pub pending_messages: Arc<TokioMutex<HashMap<u64, PendingMessage>>>,
@@ -47,6 +44,7 @@ impl TunnelImpl {
         min_size: usize,
         message_type: &MessageType,
     ) -> Result<(Vec<u8>, bool), Box<dyn std::error::Error + Send + Sync>> {
+        // Compression logic is always applied without feature flags
         match message_type {
             MessageType::Control | MessageType::Heartbeat | MessageType::Ack => {
                 // Skip compression for control-plane messages and acknowledgments
@@ -86,7 +84,7 @@ impl TunnelImpl {
         let (mut payload, compressed) =
             Self::maybe_compress_data(&data, algorithm, min_size, &msg_ctx.message_type).await?;
 
-        let mut encrypted = false;
+        let mtu = discover_mtu(&self.config); // Use centralized MTU logic
 
         let mut window = self.sliding_window.lock().await;
         if window.inflight.len() >= window.max_inflight {
@@ -107,31 +105,6 @@ impl TunnelImpl {
             _ => { /* existing logic */ }
         }
 
-        if let Some(ref encryptor) = self.encryptor {
-            if matches!(msg_ctx.message_type, MessageType::Data) {
-                let aad = b""; // optionally pass metadata
-                let (ciphertext, nonce) = encryptor.encrypt(&payload, aad).map_err(|e| {
-                    Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                        "Encryption failed: {:?}",
-                        e
-                    ))
-                })?;
-                let mut buf = Vec::with_capacity(12 + ciphertext.len());
-                buf.extend_from_slice(&nonce);
-                buf.extend_from_slice(&ciphertext);
-                payload = buf;
-                encrypted = true;
-            }
-        }
-
-        if encrypted {
-            debug!(
-                "AES-GCM encryption applied: {} -> {} bytes",
-                data.len(),
-                payload.len()
-            );
-        }
-
         if compressed {
             debug!(
                 original_size = data.len(),
@@ -149,7 +122,7 @@ impl TunnelImpl {
 
         let chunks = frame_chunks(
             &payload,
-            1400 - 8,
+            mtu - 8,
             msg_ctx.message_id as u32,
             msg_ctx.message_type.to_u8(),
         ); // example MTU logic
@@ -171,38 +144,11 @@ impl TunnelImpl {
         Ok(chunks)
     }
 
-    pub async fn decrypt_if_needed(
-        &self,
-        data: &[u8],
-        msg_type: &MessageType,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(ref encryptor) = self.encryptor {
-            if matches!(msg_type, MessageType::Data) {
-                if data.len() < 12 {
-                    return Err("Encrypted payload too short (missing nonce)".into());
-                }
-                let (nonce_bytes, ciphertext) = data.split_at(12);
-                let mut nonce_array = [0u8; 12];
-                nonce_array.copy_from_slice(nonce_bytes);
-                let aad = b""; // optionally bind to metadata
-                let plaintext = encryptor
-                    .decrypt(ciphertext, &nonce_array, aad)
-                    .map_err(|e| {
-                        Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                            "Decryption failed: {:?}",
-                            e
-                        ))
-                    })?;
-                return Ok(plaintext);
-            }
-        }
-        Ok(data.to_vec())
-    }
-
     pub async fn receive_data(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let start_time = Instant::now(); // Start latency timer
+        let mtu = discover_mtu(&self.config); // Use centralized MTU logic
         let socket = self.socket.lock().await;
-        let mut buf = [0u8; 1500];
+        let mut buf = vec![0u8; mtu];
         let (len, peer) = socket.recv_from(&mut buf).await?;
         let received_payload = &buf[..len];
 
@@ -246,19 +192,17 @@ impl TunnelImpl {
         let mut buffer = self.reassembly_buffer.lock().await;
         buffer.purge_expired();
         if let Some(assembled) = buffer.insert(received_payload.to_vec()) {
-            let decrypted = self.decrypt_if_needed(&assembled, &msg_type).await?;
-
             let final_payload = if matches!(msg_type, MessageType::Data) {
                 let algorithm = &self.config.compression.algorithm;
-                match decompress_data(&decrypted, algorithm).await {
+                match decompress_data(&assembled, algorithm).await {
                     Ok(decompressed) => decompressed,
                     Err(e) => {
                         tracing::warn!("Decompression failed: {}", e);
-                        decrypted
+                        assembled
                     }
                 }
             } else {
-                decrypted
+                assembled
             };
 
             match msg_type {
@@ -365,7 +309,8 @@ impl TunnelImpl {
                     if now.duration_since(msg.last_sent) > resend_interval
                         && msg.retries < max_retries
                     {
-                        let backoff = Duration::from_secs(2u64.pow(msg.retries.min(5) as u32)); // Exponential backoff
+                        let retries = msg.retries.clamp(0, 5); 
+                        let backoff = Duration::from_secs(2u64.pow(retries as u32)); // Exponential backoff
                         if now.duration_since(msg.last_sent) >= backoff {
                             let sock = socket.lock().await;
                             for chunk in &msg.chunks {
@@ -400,32 +345,28 @@ impl TunnelImpl {
             }
         });
     }
+}
 
-    pub async fn perform_key_exchange(
-        &self,
-        peer_public_key: &[u8],
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        let key_pair = X25519KeyPair::generate();
-        let peer_public_key = PublicKey::from(peer_public_key.try_into()?);
-        let shared_secret = key_pair.derive_shared_secret(&peer_public_key);
+// ...existing code...
 
-        debug!("Shared secret derived successfully");
+pub fn process_packet(
+    packet: &[u8],
+    buffer_usage: &mut usize,
+    flow_control_threshold: usize,
+) -> bool {
+    *buffer_usage += packet.len();
 
-        // Return the public key to send to the peer
-        Ok(key_pair.public_key.as_bytes().to_vec())
+    if *buffer_usage > flow_control_threshold {
+        // Signal backpressure
+        tracing::warn!("Buffer usage exceeded flow control threshold. Backpressure applied.");
+        PACKET_LOSS_GAUGE.inc(); // Increment packet loss gauge
+        return false; // Indicate backpressure
     }
 
-    pub async fn handle_handshake(
-        &self,
-        peer_public_key: &[u8],
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let local_public_key = self.perform_key_exchange(peer_public_key).await?;
-        debug!("Sending local public key to peer");
+    // Simulate packet processing logic
+    tracing::info!("Processing packet of size: {}", packet.len());
+    PACKETS_TOTAL.inc(); // Increment total packets processed
+    *buffer_usage -= packet.len();
 
-        // Send the local public key to the peer (implementation depends on your protocol)
-        let socket = self.socket.lock().await;
-        socket.send_to(&local_public_key, "peer_address_placeholder").await?;
-
-        Ok(())
-    }
+    true // Indicate successful processing
 }

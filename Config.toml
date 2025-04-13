@@ -13,25 +13,15 @@ health_addr = "127.0.0.1:8080"   # Address for health server
 enable_metrics = true            # Enable or disable metrics collection
 
 [compression]
-# Algorithm to use for compression (e.g., "gzip", "zstd")
-algorithm = "gzip"
-
-# Minimum size (in bytes) for payloads to be compressed
-min_compression_size = 512
+algorithm = "gzip"               # Algorithm to use for compression (e.g., "gzip", "zstd")
+min_compression_size = 512       # Minimum size (in bytes) for payloads to be compressed
 
 [udp]
-mtu = 1500  # Maximum Transmission Unit (MTU), adjust based on network environment
-buffer_size = 8192  # Set default buffer size to 8KB (can be adjusted based on needs)
-rate_limit = 1000  # Rate limit in bytes per second, adjust based on your bandwidth requirements
-max_packet_size = 1400  # Safe packet size considering typical MTU and headers
-flow_control_threshold = 500  # Flow control threshold (in bytes) for congestion management
-recv_buffer_size = 1048576  # OS-level receive buffer size (in bytes)
-send_buffer_size = 1048576  # OS-level send buffer size (in bytes)
-enable_mtu_discovery = true  # Enable dynamic MTU path discovery (true/false)
-
-[encryption]
-enabled = true
-key = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"  # 64 hex chars = 32 bytes
-algorithm = "aes-gcm"  # Possible values: "aes-gcm"
-key_size = 256  # AES key size (options: 128, 192, 256)
-iv_size = 12  # Initialization vector size (for AES-GCM)
+mtu = 1500                       # Maximum Transmission Unit (MTU)
+buffer_size = 8192               # Default buffer size
+rate_limit = 1000                # Rate limit in bytes per second
+max_packet_size = 1400           # Safe packet size considering typical MTU and headers
+flow_control_threshold = 500     # Flow control threshold (in bytes)
+recv_buffer_size = 1048576       # OS-level receive buffer size (in bytes)
+send_buffer_size = 1048576       # OS-level send buffer size (in bytes)
+enable_mtu_discovery = true      # Enable dynamic MTU path discovery

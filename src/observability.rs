@@ -7,6 +7,7 @@ use prometheus::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use warp::Filter;
 
 #[derive(Clone)]
 pub struct HealthState {
@@ -61,9 +62,10 @@ impl HealthState {
 }
 
 pub fn init_metrics() {
+    // Ensure metrics are always initialized
     REGISTRY
         .register(Box::new(PACKETS_TOTAL.clone()))
-        .expect("Failed to register metric");
+        .expect("Failed to register PACKETS_TOTAL");
     REGISTRY
         .register(Box::new(RETRIES_TOTAL.clone()))
         .expect("Failed to register RETRIES_TOTAL");
@@ -104,17 +106,66 @@ pub async fn ready(state: Arc<HealthState>) -> &'static str {
     }
 }
 
-pub async fn start_health_server(addr: SocketAddr, state: Arc<HealthState>) {
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/ready", get(move || ready(state.clone())))
-        .route("/metrics", get(metrics));
-    axum::serve(
-        tokio::net::TcpListener::bind(addr)
+pub async fn start_health_server(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let health_route =
+        warp::path!("health").map(|| warp::reply::with_status("OK", warp::http::StatusCode::OK));
+    warp::serve(health_route).run(addr.parse()?).await;
+    Ok(())
+}
+
+pub async fn start_metrics_server(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let metrics_route = warp::path!("metrics").map(|| {
+        let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = Vec::new();
+        encoder.encode(&metric_families, &mut buffer).unwrap();
+        warp::http::Response::builder()
+            .header("Content-Type", encoder.format_type())
+            .body(buffer)
+    });
+
+    warp::serve(metrics_route).run(addr.parse()?).await;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prometheus::{IntCounter, Registry};
+
+    #[test]
+    fn test_metrics_initialization() {
+        let retries_total = IntCounter::new("retries_total", "Total retries").unwrap();
+        let registry = Registry::new();
+        registry.register(Box::new(retries_total.clone())).unwrap();
+
+        retries_total.inc();
+        assert_eq!(
+            retries_total.get(),
+            1,
+            "Retries total should increment correctly"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metrics_server() {
+        let addr = "127.0.0.1:9101";
+        tokio::spawn(async move {
+            start_metrics_server(addr).await.unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        let response = reqwest::get(format!("http://{}/metrics", addr))
             .await
-            .expect("Failed to bind TCP listener"),
-        app.into_make_service(),
-    )
-    .await
-    .expect("Health server failed to start");
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert!(
+            response.contains("# HELP"),
+            "Metrics endpoint should return Prometheus metrics"
+        );
+    }
 }

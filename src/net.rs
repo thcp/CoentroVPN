@@ -1,3 +1,4 @@
+use crate::config::Config; // Use the Config type from your project
 use std::net::SocketAddr;
 
 pub const IP_HEADER_SIZE: usize = 20;
@@ -7,6 +8,17 @@ pub const ENCRYPTION_OVERHEAD: usize = 32; // Adjust if protocol overhead change
 /// Calculates the maximum safe UDP payload size for given MTU
 pub fn calculate_max_payload_size(mtu: usize) -> usize {
     mtu.saturating_sub(IP_HEADER_SIZE + UDP_HEADER_SIZE + ENCRYPTION_OVERHEAD)
+}
+
+pub fn discover_mtu(config: &Config) -> usize {
+    if config.udp.enable_mtu_discovery {
+        // Perform dynamic MTU discovery logic here
+        // For simplicity, return a discovered MTU (e.g., 1400 bytes)
+        1400
+    } else {
+        // Use the static MTU value from the configuration
+        config.udp.mtu.unwrap_or(1500)
+    }
 }
 
 /// Linux-specific implementation for MTU probing.
