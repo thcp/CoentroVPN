@@ -21,7 +21,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Set up Rust
-        uses: actions/setup-rust@v2
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
       - name: Build Rust workspace
         run: cargo build --workspace
