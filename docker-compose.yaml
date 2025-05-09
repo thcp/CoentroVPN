@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  backend:
+    build: ./management_api
+    ports:
+      - "8080:8080"
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: coentro
+      POSTGRES_PASSWORD: vpnpassword
+      POSTGRES_DB: coentrovpn
+    ports:
+      - "5432:5432"
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "4173:4173"
+    command: npm run preview -- --host

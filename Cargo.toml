@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "core_engine",
+    "management_api",
+    "cli_client",
+    "gui_client",
+    "shared_utils"
+]
