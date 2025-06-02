@@ -67,8 +67,8 @@ jobs:
       - name: Run E2E tests
         uses: actions-rs/cargo@v1
         with:
-          command: test
-          args: --test e2e
+          command: run
+          args: --example e2e_test -p shared_utils
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
