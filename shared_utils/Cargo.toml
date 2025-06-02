@@ -10,6 +10,13 @@ byteorder = "1.5.0"
 # Checksums
 crc32fast = "1.3.2"
 
+# QUIC transport
+quinn = "0.10.2"
+rustls = { version = "0.21.7", features = ["dangerous_configuration"] }
+rcgen = "0.11.3"
+tokio = { version = "1.32.0", features = ["full"] }
+futures = "0.3.28"
+
 # Error handling
 thiserror = "2.0.12"
 
@@ -36,3 +43,7 @@ path = "examples/config_example.rs"
 [[example]]
 name = "framing_test"
 path = "examples/framing_test.rs"
+
+[[example]]
+name = "quic_example"
+path = "examples/quic_example.rs"
