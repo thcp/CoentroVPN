@@ -1,4 +1,4 @@
-name: Build and Test
+name: Build, Lint, and Test
 
 on:
   push:
@@ -6,16 +6,29 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
 jobs:
-  build-and-test:
+  rust-checks:
+    name: Rust Checks
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        rust:
+          - stable
     steps:
       - uses: actions/checkout@v3
 
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
-          path: ~/.cargo/registry
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -25,12 +38,37 @@ jobs:
         with:
           toolchain: stable
           override: true
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Lint with clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all -- -D warnings
 
       - name: Build Rust workspace
-        run: cargo build --workspace
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --workspace
 
-      - name: Test Rust workspace
-        run: cargo test --workspace
+      - name: Run unit tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --workspace
+
+      - name: Run E2E tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --test e2e
 
       - name: Set up Node.js
         uses: actions/setup-node@v3

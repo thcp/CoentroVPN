@@ -590,6 +590,20 @@ mod tests {
     }
     
     #[test]
+    fn test_invalid_frame_type() {
+        // Test with an invalid frame type value
+        let invalid_type = 0xFF;
+        let result = FrameType::from_u8(invalid_type);
+        
+        assert!(result.is_err());
+        if let Err(FrameError::InvalidFrameType(value)) = result {
+            assert_eq!(value, invalid_type);
+        } else {
+            panic!("Expected InvalidFrameType error");
+        }
+    }
+    
+    #[test]
     fn test_frame_flags() {
         let mut flags = FrameFlags::new();
         assert_eq!(flags.to_u8(), 0);
@@ -734,5 +748,84 @@ mod tests {
         } else {
             panic!("Expected PayloadTooLarge error");
         }
+    }
+    
+    #[test]
+    fn test_corrupted_frame_invalid_magic() {
+        // Create a valid frame
+        let data = b"Test data".to_vec();
+        let frame = Frame::new_data(data).unwrap();
+        
+        // Encode the frame
+        let encoder = FrameEncoder::new();
+        let mut encoded = encoder.encode(&frame);
+        
+        // Corrupt the magic byte
+        encoded[0] = 0xFF; // Invalid magic byte
+        
+        // Try to decode the corrupted frame
+        let mut decoder = FrameDecoder::new();
+        let result = decoder.decode(&encoded);
+        
+        // Should fail with InvalidMagic error
+        assert!(result.is_err());
+        if let Err(FrameError::InvalidMagic { expected, actual }) = result {
+            assert_eq!(expected, FRAME_MAGIC);
+            assert_eq!(actual, 0xFF);
+        } else {
+            panic!("Expected InvalidMagic error");
+        }
+    }
+    
+    #[test]
+    fn test_corrupted_frame_invalid_checksum() {
+        // Create a valid frame
+        let data = b"Test data".to_vec();
+        let frame = Frame::new_data(data).unwrap();
+        
+        // Encode the frame
+        let encoder = FrameEncoder::new();
+        let mut encoded = encoder.encode(&frame);
+        
+        // Corrupt the payload (but keep valid header)
+        if encoded.len() > HEADER_SIZE + 2 {
+            encoded[HEADER_SIZE + 1] ^= 0xFF; // Flip some bits in the payload
+        }
+        
+        // Try to decode the corrupted frame
+        let mut decoder = FrameDecoder::new();
+        let result = decoder.decode(&encoded);
+        
+        // Should fail with ChecksumMismatch error
+        assert!(result.is_err());
+        if let Err(FrameError::ChecksumMismatch { expected, actual }) = result {
+            assert_ne!(expected, actual); // The checksums should be different
+        } else {
+            panic!("Expected ChecksumMismatch error");
+        }
+    }
+    
+    #[test]
+    fn test_incomplete_frame() {
+        // Create a valid frame
+        let data = b"Test data".to_vec();
+        let frame = Frame::new_data(data).unwrap();
+        
+        // Encode the frame
+        let encoder = FrameEncoder::new();
+        let encoded = encoder.encode(&frame);
+        
+        // Take only part of the encoded frame (just the header)
+        let partial_encoded = &encoded[0..HEADER_SIZE];
+        
+        // Try to decode the incomplete frame
+        let mut decoder = FrameDecoder::new();
+        let frames = decoder.decode(partial_encoded).unwrap();
+        
+        // Should not have decoded any frames yet (not enough data)
+        assert_eq!(frames.len(), 0);
+        
+        // Verify that the data is in the buffer
+        assert_eq!(decoder.buffered_bytes(), HEADER_SIZE);
     }
 }

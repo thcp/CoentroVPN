@@ -1,6 +1,5 @@
 use shared_utils::logging;
-use shared_utils::config::{Config, ConfigManager};
-use tracing::{info, debug, error, warn};
+use tracing::{info, debug};
 
 fn main() {
     // Initialize logging with default settings

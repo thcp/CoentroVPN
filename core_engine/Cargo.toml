@@ -9,3 +9,13 @@ shared_utils = { path = "../shared_utils" }
 
 # Logging
 tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2.0.12"
+
+# Async runtime
+tokio = { version = "1.32.0", features = ["full"] }
+
+# QUIC protocol
+quinn = "0.10.2"
