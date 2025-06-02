@@ -56,9 +56,7 @@ impl QuicClient {
             .connect(server_addr, "localhost")
             .map_err(|e| TransportError::Other(format!("Failed to connect: {}", e)))?;
 
-        let new_conn = connecting
-            .await
-            .map_err(TransportError::Connection)?;
+        let new_conn = connecting.await.map_err(TransportError::Connection)?;
 
         info!("Connected to QUIC server at {}", server_addr);
 

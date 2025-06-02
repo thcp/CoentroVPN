@@ -292,7 +292,7 @@ impl Session {
 
         // Get a clone of the tunnel Arc to avoid holding the lock across await
         let tunnel_clone = Arc::clone(tunnel);
-        
+
         // Get the tunnel ID for logging
         let tunnel_id = {
             let guard = match tunnel_clone.lock() {
@@ -308,7 +308,7 @@ impl Session {
             };
             guard.id().to_string()
         };
-        
+
         // Now send the data with a new lock
         let result = {
             let guard = match tunnel_clone.lock() {
@@ -324,7 +324,7 @@ impl Session {
             };
             guard.send(data).await
         };
-        
+
         // Handle the result
         if let Err(e) = result {
             error!(
@@ -388,7 +388,7 @@ impl Session {
 
         // Get a clone of the tunnel Arc to avoid holding the lock across await
         let tunnel_clone = Arc::clone(tunnel);
-        
+
         // Get the tunnel ID for logging
         let tunnel_id = {
             let guard = match tunnel_clone.lock() {
@@ -404,7 +404,7 @@ impl Session {
             };
             guard.id().to_string()
         };
-        
+
         // Now receive the data with a new lock
         let result = {
             let mut guard = match tunnel_clone.lock() {
@@ -420,7 +420,7 @@ impl Session {
             };
             guard.receive().await
         };
-        
+
         // Handle the result
         let data = match result {
             Ok(data) => data,
@@ -470,7 +470,7 @@ impl Session {
         // Close the tunnel if we have one
         if let Some(tunnel) = &self.tunnel {
             let tunnel_clone = Arc::clone(tunnel);
-            
+
             // First try to get the tunnel ID for logging
             let tunnel_id = match tunnel_clone.lock() {
                 Ok(guard) => guard.id().to_string(),
@@ -483,7 +483,7 @@ impl Session {
                     "unknown".to_string()
                 }
             };
-            
+
             // Now try to close the tunnel
             match tunnel_clone.lock() {
                 Ok(mut guard) => {
@@ -495,7 +495,7 @@ impl Session {
                             "Error closing tunnel"
                         );
                     }
-                },
+                }
                 Err(e) => {
                     warn!(
                         session_id = %self.id,
