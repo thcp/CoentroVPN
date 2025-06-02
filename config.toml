@@ -1,0 +1,45 @@
+# CoentroVPN Configuration File
+
+# Role: "client" or "server"
+role = "client"
+
+# Log level: "debug", "info", "warn", "error"
+log_level = "info"
+
+# Network configuration
+[network]
+# Port for the VPN server to listen on (for server role)
+# or local port to use (for client role)
+port = 8080
+# Interface to bind to
+bind_address = "0.0.0.0"
+# Maximum number of concurrent connections (server only)
+max_connections = 100
+
+# Security configuration
+[security]
+# Pre-shared key for authentication
+psk = "your-secure-psk-here"
+# Alternatively, you can use TLS certificates:
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+# Enable TLS verification
+verify_tls = true
+
+# Client-specific configuration (used when role is "client")
+[client]
+# Server address to connect to
+server_address = "vpn.example.com"
+# Reconnect automatically on disconnect
+auto_reconnect = true
+# Reconnect interval in seconds
+reconnect_interval = 5
+
+# Server-specific configuration (used when role is "server")
+[server]
+# Virtual IP range for clients
+virtual_ip_range = "10.0.0.0/24"
+# DNS servers to push to clients
+dns_servers = ["8.8.8.8", "1.1.1.1"]
+# Routes to push to clients
+routes = ["192.168.1.0/24"]
