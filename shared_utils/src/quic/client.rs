@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
+use crate::crypto::aes_gcm::AesGcmCipher;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -14,13 +15,17 @@ use super::transport::{
 /// QUIC client for CoentroVPN.
 pub struct QuicClient {
     endpoint: Endpoint,
+    cipher: Arc<AesGcmCipher>,
 }
 
 impl QuicClient {
     /// Create a new QUIC client.
-    pub fn new() -> TransportResult<Self> {
+    pub fn new(key: &[u8]) -> TransportResult<Self> {
         // Configure client TLS
         let client_tls = configure_client_tls()?;
+
+        // Initialize cipher
+        let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| TransportError::Other(format!("Failed to initialize cipher: {}", e)))?);
         
         // Configure QUIC client
         let mut client_config = ClientConfig::new(client_tls);
@@ -36,7 +41,7 @@ impl QuicClient {
         let mut endpoint = Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
         endpoint.set_default_client_config(client_config);
         
-        Ok(Self { endpoint })
+        Ok(Self { endpoint, cipher })
     }
     
     /// Connect to a server and establish a new connection.
@@ -56,21 +61,33 @@ impl QuicClient {
     
     /// Handle a bidirectional stream.
     pub async fn handle_bidirectional_stream(
-        &self,
+        // No longer &self as cipher is passed directly
         _send: SendStream,
-        recv: RecvStream,
+        mut recv: RecvStream, // Made mut recv here
         tx: mpsc::Sender<TransportMessage>,
+        cipher: Arc<AesGcmCipher>,
     ) {
-        let mut recv = recv;
+        // let mut recv = recv; // recv is already mut
         
         loop {
             match recv.read_chunk(8192, false).await {
                 Ok(Some(chunk)) => {
-                    debug!("Received {} bytes from server", chunk.bytes.len());
-                    
-                    if let Err(e) = tx.send(TransportMessage::Data(chunk.bytes.to_vec())).await {
-                        error!("Failed to send data to channel: {}", e);
-                        break;
+                    debug!("Received {} encrypted bytes from server", chunk.bytes.len());
+                    match cipher.decrypt(&chunk.bytes) {
+                        Ok(decrypted_data) => {
+                            debug!("Decrypted to {} bytes", decrypted_data.len());
+                            if let Err(e) = tx.send(TransportMessage::Data(decrypted_data)).await {
+                                error!("Failed to send data to channel: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to decrypt data from server: {}", e);
+                            // Optionally send an error message through tx or handle appropriately
+                            // For now, we break the loop on decryption failure.
+                            let _ = tx.send(TransportMessage::Error(TransportError::Other(format!("Decryption failed: {}", e)))).await;
+                            break;
+                        }
                     }
                 }
                 Ok(None) => {
@@ -104,6 +121,7 @@ impl QuicClient {
     async fn process_incoming_streams(
         connection: Connection,
         tx: mpsc::Sender<TransportMessage>,
+        cipher: Arc<AesGcmCipher>, // Pass cipher
     ) {
         // Use a manual approach to handle incoming streams
         tokio::spawn(async move {
@@ -112,9 +130,10 @@ impl QuicClient {
                 match connection.accept_bi().await {
                     Ok((send, recv)) => {
                         let tx_clone = tx.clone();
+                        let cipher_clone = cipher.clone(); // Clone Arc for the new task
                         tokio::spawn(async move {
-                            let client = QuicClient::new().unwrap();
-                            client.handle_bidirectional_stream(send, recv, tx_clone).await;
+                            // Call handle_bidirectional_stream directly, passing the cipher
+                            QuicClient::handle_bidirectional_stream(send, recv, tx_clone, cipher_clone).await;
                         });
                     }
                     Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
@@ -144,10 +163,15 @@ impl QuicTransport for QuicClient {
     }
     
     async fn send(&self, connection: Connection, data: Vec<u8>) -> TransportResult<()> {
+        debug!("Encrypting {} bytes before sending", data.len());
+        let encrypted_data = self.cipher.encrypt(&data)
+            .map_err(|e| TransportError::Other(format!("Client encryption failed: {}", e)))?;
+        debug!("Encrypted to {} bytes", encrypted_data.len());
+
         let (mut send, _) = connection.open_bi().await
             .map_err(|e| TransportError::Other(format!("Failed to open bidirectional stream: {}", e)))?;
             
-        send.write_all(&data).await
+        send.write_all(&encrypted_data).await
             .map_err(|e| TransportError::Write(e))?;
             
         send.finish().await
@@ -159,7 +183,8 @@ impl QuicTransport for QuicClient {
     async fn receive(&self, connection: Connection) -> TransportResult<mpsc::Receiver<TransportMessage>> {
         let (tx, rx) = mpsc::channel(100);
         
-        tokio::spawn(Self::process_incoming_streams(connection, tx));
+        // Pass the client's cipher to process_incoming_streams
+        tokio::spawn(Self::process_incoming_streams(connection, tx, self.cipher.clone()));
         
         Ok(rx)
     }
