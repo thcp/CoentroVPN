@@ -5,7 +5,7 @@
 //! and context-aware logging macros.
 
 use std::path::Path;
-use tracing::{Level, Subscriber};
+use tracing::Level;
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     prelude::*,
@@ -128,7 +128,7 @@ pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
     }
 
     // Add span events if enabled
-    let span_events = if options.include_span_events {
+    let _span_events = if options.include_span_events {
         FmtSpan::FULL
     } else {
         FmtSpan::NONE
