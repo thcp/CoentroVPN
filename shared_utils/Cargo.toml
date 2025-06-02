@@ -52,3 +52,7 @@ path = "examples/framing_test.rs"
 [[example]]
 name = "quic_example"
 path = "examples/quic_example.rs"
+
+[[example]]
+name = "e2e_test"
+path = "examples/e2e_test.rs"
