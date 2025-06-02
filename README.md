@@ -61,6 +61,38 @@ cd dashboard && npm run test
 
 ---
 
+## 🚀 Running the Demo
+
+### Building the Project
+```bash
+cargo build --release
+```
+
+### Starting the Server
+```bash
+cargo run --bin server -- --listen 127.0.0.1:4433
+```
+
+### Connecting with a Client
+```bash
+cargo run --bin client -- --connect 127.0.0.1:4433
+```
+
+### Running E2E Tests
+```bash
+cargo test --test e2e
+```
+
+The E2E tests demonstrate the full functionality of CoentroVPN by:
+1. Starting a server in a separate task
+2. Connecting a client to the server
+3. Exchanging encrypted, framed packets
+4. Verifying message integrity and encryption
+
+The tests also verify tamper resistance by attempting to decrypt messages with incorrect keys.
+
+---
+
 ## 📦 Docker Compose Example
 
 ```yaml

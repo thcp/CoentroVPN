@@ -6,14 +6,14 @@
 
 use std::path::Path;
 use tracing::Level;
-use tracing_subscriber::{
-    fmt::{self, format::FmtSpan},
-    prelude::*,
-    EnvFilter,
-};
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
     rolling::{RollingFileAppender, Rotation},
+};
+use tracing_subscriber::{
+    EnvFilter,
+    fmt::{self, format::FmtSpan},
+    prelude::*,
 };
 
 /// Log initialization options.
@@ -21,25 +21,25 @@ use tracing_appender::{
 pub struct LogOptions {
     /// Log level (default: INFO)
     pub level: Level,
-    
+
     /// Whether to log to stdout (default: true)
     pub log_to_stdout: bool,
-    
+
     /// Whether to log to a file (default: false)
     pub log_to_file: bool,
-    
+
     /// Directory to store log files (default: "./logs")
     pub log_dir: String,
-    
+
     /// Base filename for log files (default: "coentrovpn")
     pub log_file_name: String,
-    
+
     /// Whether to use JSON format for logs (default: false)
     pub json_format: bool,
-    
+
     /// Whether to include file and line information (default: true)
     pub include_file_line: bool,
-    
+
     /// Whether to include span events (default: false)
     pub include_span_events: bool,
 }
@@ -79,8 +79,7 @@ impl Default for LogOptions {
 /// let _guard = init_logging(options);
 /// ```
 pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
-    let filter = EnvFilter::from_default_env()
-        .add_directive(options.level.into());
+    let filter = EnvFilter::from_default_env().add_directive(options.level.into());
 
     let mut layers = Vec::new();
     let mut guard = None;
@@ -103,12 +102,9 @@ pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
 
     // Configure file logging if enabled
     if options.log_to_file {
-        let file_appender = RollingFileAppender::new(
-            Rotation::DAILY,
-            &options.log_dir,
-            &options.log_file_name,
-        );
-        
+        let file_appender =
+            RollingFileAppender::new(Rotation::DAILY, &options.log_dir, &options.log_file_name);
+
         let (non_blocking, worker_guard) = NonBlocking::new(file_appender);
         guard = Some(worker_guard);
 
@@ -207,17 +203,17 @@ pub fn file_logger(path: impl AsRef<Path>) -> WorkerGuard {
         path.as_ref().parent().unwrap_or_else(|| Path::new(".")),
         path.as_ref().file_name().unwrap().to_str().unwrap(),
     );
-    
+
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-    
+
     let subscriber = tracing_subscriber::fmt()
         .with_writer(non_blocking)
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
-    
+
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set global default subscriber");
-    
+
     guard
 }
 

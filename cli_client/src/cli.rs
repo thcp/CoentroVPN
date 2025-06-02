@@ -63,7 +63,7 @@ pub type CliResult<T> = Result<T, CliError>;
 /// Run the CLI application
 pub fn run() -> CliResult<()> {
     let cli = Cli::parse();
-    
+
     // Load configuration
     debug!("Loading configuration from {:?}", cli.config);
     let config_manager = match ConfigManager::load(&cli.config) {
@@ -73,16 +73,18 @@ pub fn run() -> CliResult<()> {
             return Err(CliError::ConfigError(err));
         }
     };
-    
+
     let config = config_manager.config();
-    
+
     // Determine which component to start based on command and config
     match &cli.command {
         Some(Commands::Server { force }) => {
             if *force || config.role == Role::Server {
                 start_server(config)?;
             } else {
-                warn!("Configuration specifies client role, but server command was given with --force");
+                warn!(
+                    "Configuration specifies client role, but server command was given with --force"
+                );
                 start_server(config)?;
             }
         }
@@ -90,7 +92,9 @@ pub fn run() -> CliResult<()> {
             if *force || config.role == Role::Client {
                 start_client(config)?;
             } else {
-                warn!("Configuration specifies server role, but client command was given with --force");
+                warn!(
+                    "Configuration specifies server role, but client command was given with --force"
+                );
                 start_client(config)?;
             }
         }
@@ -102,26 +106,26 @@ pub fn run() -> CliResult<()> {
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// Start the VPN server
 fn start_server(config: &Config) -> CliResult<()> {
     info!("Starting CoentroVPN server");
-    
+
     // Validate server configuration
     if let Err(err) = config.validate() {
         error!("Invalid server configuration: {}", err);
         return Err(CliError::ConfigError(err));
     }
-    
+
     // TODO: Implement server startup logic
     // This would typically involve calling into the core_engine crate
     // to start the server with the provided configuration
-    
+
     info!("CoentroVPN server started successfully");
-    
+
     // For now, just return Ok since we don't have the actual server implementation
     Ok(())
 }
@@ -129,19 +133,19 @@ fn start_server(config: &Config) -> CliResult<()> {
 /// Start the VPN client
 fn start_client(config: &Config) -> CliResult<()> {
     info!("Starting CoentroVPN client");
-    
+
     // Validate client configuration
     if let Err(err) = config.validate() {
         error!("Invalid client configuration: {}", err);
         return Err(CliError::ConfigError(err));
     }
-    
+
     // TODO: Implement client startup logic
     // This would typically involve calling into the core_engine crate
     // to start the client with the provided configuration
-    
+
     info!("CoentroVPN client started successfully");
-    
+
     // For now, just return Ok since we don't have the actual client implementation
     Ok(())
 }

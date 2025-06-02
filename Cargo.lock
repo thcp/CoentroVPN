@@ -275,8 +275,12 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "core_engine"
 version = "0.1.0"
 dependencies = [
+ "quinn",
  "shared_utils",
+ "thiserror 2.0.12",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

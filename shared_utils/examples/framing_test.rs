@@ -37,7 +37,10 @@ fn run_server() -> io::Result<()> {
 
     for stream in listener.incoming() {
         let mut stream = stream?;
-        println!("Server: Connection established from {}", stream.peer_addr()?);
+        println!(
+            "Server: Connection established from {}",
+            stream.peer_addr()?
+        );
 
         // Create a stream framer for decoding incoming frames
         let mut framer = StreamFramer::new();
@@ -54,7 +57,7 @@ fn run_server() -> io::Result<()> {
                     break;
                 }
             };
-            
+
             println!("Server: Received {} bytes", n);
 
             // Process the data and decode frames
@@ -65,34 +68,40 @@ fn run_server() -> io::Result<()> {
                     break;
                 }
             };
-            
+
             println!("Server: Decoded {} frames", frame_count);
 
             // Process each frame
             while let Some(frame) = framer.next_frame() {
                 println!("Server: Received frame: {:?}", frame);
-                println!("Server: Frame payload: {:?}", String::from_utf8_lossy(&frame.payload));
+                println!(
+                    "Server: Frame payload: {:?}",
+                    String::from_utf8_lossy(&frame.payload)
+                );
 
                 // Create a response frame
                 let response = match frame.frame_type {
                     FrameType::Data => {
-                        let response_data = format!("Received your data: {}", 
-                            String::from_utf8_lossy(&frame.payload)).into_bytes();
+                        let response_data = format!(
+                            "Received your data: {}",
+                            String::from_utf8_lossy(&frame.payload)
+                        )
+                        .into_bytes();
                         Frame::new_data(response_data).unwrap()
-                    },
+                    }
                     FrameType::Control => {
                         let response_data = b"Control acknowledged".to_vec();
                         Frame::new_control(response_data).unwrap()
-                    },
+                    }
                     FrameType::Keepalive => Frame::new_keepalive().unwrap(),
                     FrameType::Config => {
                         let response_data = b"Config applied".to_vec();
                         Frame::new_config(response_data).unwrap()
-                    },
+                    }
                     FrameType::Error => {
                         let response_data = b"Error received".to_vec();
                         Frame::new_error(response_data).unwrap()
-                    },
+                    }
                 };
 
                 // Encode and send the response
@@ -104,7 +113,7 @@ fn run_server() -> io::Result<()> {
                 println!("Server: Sent response frame: {:?}", response);
             }
         }
-        
+
         println!("Server: Client disconnected");
     }
 
@@ -129,7 +138,10 @@ fn run_client() -> io::Result<()> {
     // Send each frame and receive the response
     for frame in frames {
         println!("Client: Sending frame: {:?}", frame);
-        println!("Client: Frame payload: {:?}", String::from_utf8_lossy(&frame.payload));
+        println!(
+            "Client: Frame payload: {:?}",
+            String::from_utf8_lossy(&frame.payload)
+        );
 
         // Encode and send the frame
         let encoded = framer.encode(&frame);
@@ -147,7 +159,10 @@ fn run_client() -> io::Result<()> {
         // Get the response frame
         if let Some(response) = framer.next_frame() {
             println!("Client: Received response frame: {:?}", response);
-            println!("Client: Response payload: {:?}", String::from_utf8_lossy(&response.payload));
+            println!(
+                "Client: Response payload: {:?}",
+                String::from_utf8_lossy(&response.payload)
+            );
         }
 
         // Add a small delay between frames
