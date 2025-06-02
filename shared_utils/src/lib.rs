@@ -5,6 +5,8 @@
 //! utilities, and other shared code.
 
 pub mod proto;
+pub mod config;
 
 // Re-export commonly used modules for convenience
 pub use proto::framing;
+pub use config::{Config, ConfigManager, Role};

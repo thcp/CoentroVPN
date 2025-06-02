@@ -1,0 +1,24 @@
+role = "client"
+log_level = "debug"
+
+[network]
+port = 8080
+bind_address = "0.0.0.0"
+max_connections = 100
+
+[security]
+psk = "your-secure-psk-here"
+verify_tls = true
+
+[client]
+server_address = "vpn.example.com"
+auto_reconnect = true
+reconnect_interval = 5
+
+[server]
+virtual_ip_range = "10.0.0.0/24"
+dns_servers = [
+    "8.8.8.8",
+    "1.1.1.1",
+]
+routes = ["192.168.1.0/24"]
