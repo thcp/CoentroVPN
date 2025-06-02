@@ -6,6 +6,7 @@
 
 pub mod proto;
 pub mod config;
+pub mod logging;
 
 // Re-export commonly used modules for convenience
 pub use proto::framing;

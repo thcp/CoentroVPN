@@ -20,6 +20,11 @@ serde = { version = "1.0.193", features = ["derive"] }
 # Filesystem
 dirs = "5.0.1"
 
+# Logging
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+tracing-appender = "0.2.3"
+
 [dev-dependencies]
 # Testing
 tempfile = "3.8.1"

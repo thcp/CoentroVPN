@@ -55,6 +55,7 @@ use std::io::{self, Cursor};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
 use thiserror::Error;
+use tracing::{debug, error, info, instrument, trace, warn};
 
 // Constants for the frame format
 const FRAME_MAGIC: u8 = 0xC0;
@@ -192,13 +193,26 @@ pub struct Frame {
 
 impl Frame {
     /// Create a new frame with the specified type, flags, and payload
+    #[instrument(level = "debug", skip(payload), fields(payload_len = payload.len()))]
     pub fn new(frame_type: FrameType, flags: FrameFlags, payload: Vec<u8>) -> Result<Self, FrameError> {
         if payload.len() > MAX_PAYLOAD_SIZE {
+            error!(
+                size = payload.len(),
+                max = MAX_PAYLOAD_SIZE,
+                "Frame payload too large"
+            );
             return Err(FrameError::PayloadTooLarge {
                 size: payload.len(),
                 max: MAX_PAYLOAD_SIZE,
             });
         }
+        
+        debug!(
+            frame_type = ?frame_type,
+            flags = flags.to_u8(),
+            payload_len = payload.len(),
+            "Created new frame"
+        );
         
         Ok(Frame {
             frame_type,
@@ -255,10 +269,12 @@ pub struct FrameEncoder;
 impl FrameEncoder {
     /// Create a new frame encoder
     pub fn new() -> Self {
+        debug!("Created new frame encoder");
         FrameEncoder
     }
     
     /// Encode a frame into a byte vector
+    #[instrument(level = "debug", skip(self, frame), fields(frame_type = ?frame.frame_type, payload_len = frame.payload.len()))]
     pub fn encode(&self, frame: &Frame) -> Vec<u8> {
         let mut buffer = Vec::with_capacity(frame.size());
         
@@ -283,6 +299,15 @@ impl FrameEncoder {
         // Write checksum (u32, big-endian)
         buffer.write_u32::<BigEndian>(checksum).unwrap();
         
+        trace!(
+            frame_type = ?frame.frame_type,
+            flags = frame.flags.to_u8(),
+            payload_len = frame.payload.len(),
+            total_size = buffer.len(),
+            checksum = format!("0x{:08X}", checksum),
+            "Frame encoded successfully"
+        );
+        
         buffer
     }
 }
@@ -297,6 +322,7 @@ pub struct FrameDecoder {
 impl FrameDecoder {
     /// Create a new frame decoder
     pub fn new() -> Self {
+        debug!("Created new frame decoder");
         FrameDecoder {
             buffer: Vec::new(),
         }
@@ -309,16 +335,33 @@ impl FrameDecoder {
     /// is kept in the buffer for the next call.
     ///
     /// Returns a vector of successfully decoded frames.
+    #[instrument(level = "debug", skip(self, data), fields(data_len = data.len(), buffer_len = self.buffer.len()))]
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Frame>, FrameError> {
         // Append new data to the buffer
         self.buffer.extend_from_slice(data);
+        
+        trace!(
+            buffer_len = self.buffer.len(),
+            "Appended data to buffer"
+        );
         
         let mut frames = Vec::new();
         
         // Try to decode frames until we run out of data
         while let Some(frame) = self.try_decode_frame()? {
+            debug!(
+                frame_type = ?frame.frame_type,
+                payload_len = frame.payload.len(),
+                "Decoded frame"
+            );
             frames.push(frame);
         }
+        
+        info!(
+            frames_decoded = frames.len(),
+            remaining_buffer = self.buffer.len(),
+            "Decoded frames from buffer"
+        );
         
         Ok(frames)
     }
@@ -440,6 +483,7 @@ pub struct StreamFramer {
 impl StreamFramer {
     /// Create a new stream framer
     pub fn new() -> Self {
+        info!("Creating new stream framer");
         StreamFramer {
             encoder: FrameEncoder::new(),
             decoder: FrameDecoder::new(),
@@ -448,27 +492,56 @@ impl StreamFramer {
     }
     
     /// Encode a frame into a byte vector
+    #[instrument(level = "debug", skip(self, frame), fields(frame_type = ?frame.frame_type, payload_len = frame.payload.len()))]
     pub fn encode(&self, frame: &Frame) -> Vec<u8> {
+        debug!("Encoding frame");
         self.encoder.encode(frame)
     }
     
     /// Process incoming data and decode frames
     ///
     /// Returns the number of frames decoded
+    #[instrument(level = "debug", skip(self, data), fields(data_len = data.len()))]
     pub fn process_data(&mut self, data: &[u8]) -> Result<usize, FrameError> {
+        debug!("Processing incoming data");
         let frames = self.decoder.decode(data)?;
         let count = frames.len();
         
         for frame in frames {
+            debug!(
+                frame_type = ?frame.frame_type,
+                payload_len = frame.payload.len(),
+                "Queuing decoded frame"
+            );
             self.frame_queue.push_back(frame);
         }
+        
+        info!(
+            frames_decoded = count,
+            queue_size = self.frame_queue.len(),
+            "Processed incoming data"
+        );
         
         Ok(count)
     }
     
     /// Get the next decoded frame, if available
+    #[instrument(level = "debug", skip(self))]
     pub fn next_frame(&mut self) -> Option<Frame> {
-        self.frame_queue.pop_front()
+        let frame = self.frame_queue.pop_front();
+        
+        if let Some(ref f) = frame {
+            debug!(
+                frame_type = ?f.frame_type,
+                payload_len = f.payload.len(),
+                remaining_frames = self.frame_queue.len(),
+                "Retrieved frame from queue"
+            );
+        } else {
+            trace!("No frames available in queue");
+        }
+        
+        frame
     }
     
     /// Check if there are any decoded frames available
