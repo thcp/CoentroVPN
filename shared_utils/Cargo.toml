@@ -24,6 +24,11 @@ thiserror = "2.0.12"
 toml = "0.8.8"
 serde = { version = "1.0.193", features = ["derive"] }
 
+# Cryptography
+aes-gcm = "0.10.3" # For AES-GCM encryption
+rand = "0.8.5"    # For nonce generation
+anyhow = "1.0.79"  # For flexible error handling
+
 # Filesystem
 dirs = "5.0.1"
 
