@@ -1,7 +1,7 @@
-use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit}; // KeyInit is directly re-exported
 use aes_gcm::aead::Aead; // Aead needs to be imported from the sub-module
-use rand::RngCore;
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce}; // KeyInit is directly re-exported
 use anyhow::Result;
+use rand::RngCore;
 use std::fmt; // For manual Debug impl
 
 const KEY_SIZE: usize = 32; // AES-256
@@ -17,15 +17,19 @@ pub struct AesGcmCipher {
 impl fmt::Debug for AesGcmCipher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AesGcmCipher")
-         .field("cipher", &"[Aes256Gcm instance]") // Placeholder for non-Debug field
-         .finish()
+            .field("cipher", &"[Aes256Gcm instance]") // Placeholder for non-Debug field
+            .finish()
     }
 }
 
 impl AesGcmCipher {
     pub fn new(key: &[u8]) -> Result<Self> {
         if key.len() != KEY_SIZE {
-            return Err(anyhow::anyhow!("Invalid key size. Expected {} bytes, got {}", KEY_SIZE, key.len()));
+            return Err(anyhow::anyhow!(
+                "Invalid key size. Expected {} bytes, got {}",
+                KEY_SIZE,
+                key.len()
+            ));
         }
         let key_array = Key::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key_array);
@@ -48,7 +52,9 @@ impl AesGcmCipher {
         let nonce_bytes = Self::generate_nonce();
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = self.cipher.encrypt(nonce, plaintext)
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, plaintext)
             .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
         // Prepend nonce to the ciphertext: nonce || ciphertext
@@ -60,13 +66,17 @@ impl AesGcmCipher {
 
     pub fn decrypt(&self, ciphertext_with_nonce: &[u8]) -> Result<Vec<u8>> {
         if ciphertext_with_nonce.len() < NONCE_SIZE {
-            return Err(anyhow::anyhow!("Ciphertext is too short to contain a nonce."));
+            return Err(anyhow::anyhow!(
+                "Ciphertext is too short to contain a nonce."
+            ));
         }
 
         let (nonce_bytes, ciphertext) = ciphertext_with_nonce.split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        let plaintext = self.cipher.decrypt(nonce, ciphertext)
+        let plaintext = self
+            .cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
         Ok(plaintext)
@@ -101,7 +111,10 @@ mod tests {
         let cipher2 = AesGcmCipher::new(&key2).unwrap();
 
         let result = cipher2.decrypt(&encrypted_data);
-        assert!(result.is_err(), "Decryption should fail with a different key");
+        assert!(
+            result.is_err(),
+            "Decryption should fail with a different key"
+        );
     }
 
     #[test]
@@ -111,7 +124,7 @@ mod tests {
         let plaintext = b"Sensitive data.";
 
         let mut encrypted_data = cipher.encrypt(plaintext).unwrap();
-        
+
         // Tamper with the ciphertext (after the nonce)
         if encrypted_data.len() > NONCE_SIZE + 1 {
             encrypted_data[NONCE_SIZE + 1] ^= 0xff; // Flip some bits
@@ -120,13 +133,15 @@ mod tests {
             // but let's try to tamper the last byte if possible.
             let len = encrypted_data.len(); // Store len before mutable borrow
             if len > 0 {
-                 encrypted_data[len-1] ^=0xff;
+                encrypted_data[len - 1] ^= 0xff;
             }
         }
 
-
         let result = cipher.decrypt(&encrypted_data);
-        assert!(result.is_err(), "Decryption should fail for tampered ciphertext");
+        assert!(
+            result.is_err(),
+            "Decryption should fail for tampered ciphertext"
+        );
     }
 
     #[test]
@@ -134,23 +149,31 @@ mod tests {
         let short_key = [0u8; 16]; // Too short
         let result = AesGcmCipher::new(&short_key);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Invalid key size. Expected 32 bytes, got 16");
-
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Invalid key size. Expected 32 bytes, got 16"
+        );
 
         let long_key = [0u8; 48]; // Too long
         let result_long = AesGcmCipher::new(&long_key);
         assert!(result_long.is_err());
-        assert_eq!(result_long.unwrap_err().to_string(), "Invalid key size. Expected 32 bytes, got 48");
+        assert_eq!(
+            result_long.unwrap_err().to_string(),
+            "Invalid key size. Expected 32 bytes, got 48"
+        );
     }
 
-     #[test]
+    #[test]
     fn test_decrypt_too_short_ciphertext() {
         let key = AesGcmCipher::generate_key();
         let cipher = AesGcmCipher::new(&key).unwrap();
-        
+
         let short_ciphertext = b"short"; // Less than NONCE_SIZE
         let result = cipher.decrypt(short_ciphertext);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Ciphertext is too short to contain a nonce.");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Ciphertext is too short to contain a nonce."
+        );
     }
 }

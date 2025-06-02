@@ -5,10 +5,10 @@
 //! configuration from TOML files and provides a structured representation
 //! of the configuration settings.
 
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Errors that can occur during configuration operations.
@@ -32,10 +32,7 @@ pub enum ConfigError {
 
     /// Invalid configuration value
     #[error("Invalid configuration value for {key}: {message}")]
-    InvalidValue {
-        key: String,
-        message: String,
-    },
+    InvalidValue { key: String, message: String },
 
     /// Configuration file not found
     #[error("Configuration file not found at {0}")]
@@ -216,17 +213,17 @@ impl Config {
     /// Load configuration from a TOML file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref();
-        
+
         if !path.exists() {
             return Err(ConfigError::FileNotFound(path.to_path_buf()));
         }
-        
+
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
-        
+
         // Validate the configuration
         config.validate()?;
-        
+
         Ok(config)
     }
 
@@ -249,7 +246,7 @@ impl Config {
                         message: "Server must have a valid port".to_string(),
                     });
                 }
-                
+
                 // Server should have a virtual IP range
                 if self.server.virtual_ip_range.is_none() {
                     return Err(ConfigError::MissingValue(
@@ -266,14 +263,16 @@ impl Config {
                 }
             }
         }
-        
+
         // Validate security settings
-        if self.security.psk.is_none() && (self.security.cert_path.is_none() || self.security.key_path.is_none()) {
+        if self.security.psk.is_none()
+            && (self.security.cert_path.is_none() || self.security.key_path.is_none())
+        {
             return Err(ConfigError::MissingValue(
                 "Either security.psk or both security.cert_path and security.key_path must be provided".to_string(),
             ));
         }
-        
+
         Ok(())
     }
 
@@ -315,7 +314,7 @@ impl ConfigManager {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref().to_path_buf();
         let config = Config::load(&path)?;
-        
+
         Ok(ConfigManager {
             config,
             config_path: path,
@@ -382,7 +381,7 @@ mod tests {
     #[test]
     fn test_load_config() {
         let mut file = NamedTempFile::new().unwrap();
-        
+
         let config_str = r#"
             role = "server"
             log_level = "debug"
@@ -400,19 +399,25 @@ mod tests {
             dns_servers = ["8.8.8.8", "1.1.1.1"]
             routes = ["192.168.1.0/24"]
         "#;
-        
+
         file.write_all(config_str.as_bytes()).unwrap();
-        
+
         let config = Config::load(file.path()).unwrap();
-        
+
         assert_eq!(config.role, Role::Server);
         assert_eq!(config.log_level, "debug");
         assert_eq!(config.network.port, 9090);
         assert_eq!(config.network.bind_address, "127.0.0.1");
         assert_eq!(config.network.max_connections, 200);
         assert_eq!(config.security.psk, Some("test-key".to_string()));
-        assert_eq!(config.server.virtual_ip_range, Some("10.0.0.0/24".to_string()));
-        assert_eq!(config.server.dns_servers, vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]);
+        assert_eq!(
+            config.server.virtual_ip_range,
+            Some("10.0.0.0/24".to_string())
+        );
+        assert_eq!(
+            config.server.dns_servers,
+            vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]
+        );
         assert_eq!(config.server.routes, vec!["192.168.1.0/24".to_string()]);
     }
 
@@ -424,17 +429,20 @@ mod tests {
         config.network.port = 9090;
         config.security.psk = Some("test-key".to_string());
         config.server.virtual_ip_range = Some("10.0.0.0/24".to_string());
-        
+
         let file = NamedTempFile::new().unwrap();
         config.save(file.path()).unwrap();
-        
+
         let loaded_config = Config::load(file.path()).unwrap();
-        
+
         assert_eq!(loaded_config.role, Role::Server);
         assert_eq!(loaded_config.log_level, "debug");
         assert_eq!(loaded_config.network.port, 9090);
         assert_eq!(loaded_config.security.psk, Some("test-key".to_string()));
-        assert_eq!(loaded_config.server.virtual_ip_range, Some("10.0.0.0/24".to_string()));
+        assert_eq!(
+            loaded_config.server.virtual_ip_range,
+            Some("10.0.0.0/24".to_string())
+        );
     }
 
     #[test]
@@ -442,34 +450,34 @@ mod tests {
         // Test server validation
         let mut config = Config::default();
         config.role = Role::Server;
-        
+
         // Missing virtual_ip_range
         assert!(config.validate().is_err());
-        
+
         config.server.virtual_ip_range = Some("10.0.0.0/24".to_string());
-        
+
         // Missing security credentials
         assert!(config.validate().is_err());
-        
+
         config.security.psk = Some("test-key".to_string());
-        
+
         // Should be valid now
         assert!(config.validate().is_ok());
-        
+
         // Test client validation
         let mut config = Config::default();
         config.role = Role::Client;
-        
+
         // Missing server_address
         assert!(config.validate().is_err());
-        
+
         config.client.server_address = Some("vpn.example.com".to_string());
-        
+
         // Missing security credentials
         assert!(config.validate().is_err());
-        
+
         config.security.psk = Some("test-key".to_string());
-        
+
         // Should be valid now
         assert!(config.validate().is_ok());
     }
@@ -477,7 +485,7 @@ mod tests {
     #[test]
     fn test_config_manager() {
         let mut file = NamedTempFile::new().unwrap();
-        
+
         let config_str = r#"
             role = "client"
             log_level = "info"
@@ -491,19 +499,22 @@ mod tests {
             [client]
             server_address = "vpn.example.com"
         "#;
-        
+
         file.write_all(config_str.as_bytes()).unwrap();
-        
+
         let manager = ConfigManager::load(file.path()).unwrap();
-        
+
         assert_eq!(manager.config().role, Role::Client);
-        assert_eq!(manager.config().client.server_address, Some("vpn.example.com".to_string()));
-        
+        assert_eq!(
+            manager.config().client.server_address,
+            Some("vpn.example.com".to_string())
+        );
+
         // Test saving with modifications
         let mut manager = manager;
         manager.config_mut().log_level = "debug".to_string();
         manager.save().unwrap();
-        
+
         // Reload and check
         let manager = ConfigManager::load(file.path()).unwrap();
         assert_eq!(manager.config().log_level, "debug");

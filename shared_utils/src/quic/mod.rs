@@ -3,10 +3,10 @@
 //! This module provides QUIC-based transport for secure, reliable
 //! communication between CoentroVPN clients and servers.
 
-mod transport;
 mod client;
 mod server;
+mod transport;
 
-pub use transport::{QuicTransport, TransportError, TransportMessage};
 pub use client::QuicClient;
 pub use server::QuicServer;
+pub use transport::{QuicTransport, TransportError, TransportMessage};
