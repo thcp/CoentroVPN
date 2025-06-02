@@ -9,3 +9,9 @@ shared_utils = { path = "../shared_utils" }
 
 # Logging
 tracing = "0.1.40"
+
+# CLI
+clap = { version = "4.4.11", features = ["derive"] }
+
+# Error handling
+thiserror = "2.0.12"

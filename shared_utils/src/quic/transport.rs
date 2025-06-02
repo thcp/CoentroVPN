@@ -72,13 +72,13 @@ pub trait QuicTransport {
     fn connect(&self, addr: SocketAddr) -> TransportResult<Connection>;
     
     /// Send data over a connection.
-    async fn send(&self, connection: Connection, data: Vec<u8>) -> TransportResult<()>;
+    fn send(&self, connection: Connection, data: Vec<u8>) -> impl std::future::Future<Output = TransportResult<()>> + Send;
     
     /// Receive data from a connection.
-    async fn receive(&self, connection: Connection) -> TransportResult<mpsc::Receiver<TransportMessage>>;
+    fn receive(&self, connection: Connection) -> impl std::future::Future<Output = TransportResult<mpsc::Receiver<TransportMessage>>> + Send;
     
     /// Close a connection.
-    async fn close(&self, connection: Connection);
+    fn close(&self, connection: Connection) -> impl std::future::Future<Output = ()> + Send;
 }
 
 /// Create a self-signed certificate for testing.

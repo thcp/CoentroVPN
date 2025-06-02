@@ -6,7 +6,7 @@ use std::fmt; // For manual Debug impl
 
 const KEY_SIZE: usize = 32; // AES-256
 const NONCE_SIZE: usize = 12; // AES-GCM standard nonce size (96 bits)
-const TAG_SIZE: usize = 16; // AES-GCM standard tag size (128 bits)
+const _TAG_SIZE: usize = 16; // AES-GCM standard tag size (128 bits)
 
 // #[derive(Debug)] // Cannot derive Debug as Aes256Gcm doesn't implement it
 pub struct AesGcmCipher {

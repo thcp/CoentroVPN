@@ -1,24 +1,18 @@
+mod cli;
+
 use shared_utils::logging;
-use shared_utils::config::{Config, ConfigManager};
-use tracing::{info, debug, error, warn};
+use tracing::{info, debug, error};
 
 fn main() {
     // Initialize logging with default settings
     let _guard = logging::init_default_logging();
     
-    info!("Starting CoentroVPN CLI client");
-    debug!("Initializing with default configuration");
+    info!("Starting CoentroVPN CLI");
+    debug!("Initializing CLI");
     
-    // In the future, we would load configuration here
-    // let config_manager = match ConfigManager::load_default() {
-    //     Ok(manager) => manager,
-    //     Err(err) => {
-    //         error!("Failed to load configuration: {}", err);
-    //         return;
-    //     }
-    // };
-    
-    // TODO: Implement CLI client functionality
-    
-    info!("CoentroVPN CLI client started");
+    // Run the CLI application
+    if let Err(err) = cli::run() {
+        error!("CLI error: {}", err);
+        std::process::exit(1);
+    }
 }
