@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug CLI Client",
+      "cargo": {
+        "args": [
+          "build",
+          "--package",
+          "cli_client"
+        ],
+        "filter": {
+          "name": "cli_client",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}/cli_client"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Core Engine",
+      "cargo": {
+        "args": [
+          "build",
+          "--package",
+          "core_engine"
+        ],
+        "filter": {
+          "name": "core_engine",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}/core_engine"
+    }
+  ]
+}
