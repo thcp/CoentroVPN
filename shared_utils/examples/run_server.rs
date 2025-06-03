@@ -13,7 +13,7 @@ use shared_utils::logging;
 use shared_utils::quic::{QuicServer, TransportMessage};
 use std::env;
 use std::net::SocketAddr;
-use tracing::{info, Level};
+use tracing::{Level, info};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

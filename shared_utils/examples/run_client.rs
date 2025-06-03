@@ -15,7 +15,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::time;
-use tracing::{info, Level};
+use tracing::{Level, info};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the client
     let client = QuicClient::new(&encryption_key)?;
-    
+
     // Connect to the server
     info!("Connecting to server...");
     let connection = match client.connect_to_server(server_addr).await {
@@ -61,8 +61,11 @@ async fn main() -> anyhow::Result<()> {
     // Send a test message
     let message = "Hello from CoentroVPN client! This is a test message.";
     info!("Sending message: {}", message);
-    
-    match client.send(connection.clone(), message.as_bytes().to_vec()).await {
+
+    match client
+        .send(connection.clone(), message.as_bytes().to_vec())
+        .await
+    {
         Ok(_) => {
             info!("Message sent successfully");
         }
@@ -78,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     // Close the connection
     info!("Closing connection");
     client.close(connection).await;
-    
+
     info!("Client completed successfully");
 
     Ok(())
