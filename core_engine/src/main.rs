@@ -39,12 +39,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create tunnel manager
     let tunnel_manager = TunnelManager::new();
-    
+
     // Create tunnel based on configuration
     match tunnel_manager.create_tunnel_from_config(config).await {
         Ok(tunnel_id) => {
             info!("Tunnel created successfully with ID: {}", tunnel_id);
-            
+
             // Keep the application running
             tokio::signal::ctrl_c().await?;
             info!("Received shutdown signal");

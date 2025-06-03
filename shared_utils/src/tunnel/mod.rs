@@ -11,8 +11,8 @@ mod error;
 mod manager;
 pub mod types;
 
-pub use bootstrap::{TunnelBootstrapper, ClientBootstrapper, ServerBootstrapper};
+pub use bootstrap::{ClientBootstrapper, ServerBootstrapper, TunnelBootstrapper};
 pub use config::TunnelConfig;
 pub use error::{TunnelError, TunnelResult};
 pub use manager::TunnelManager;
-pub use types::{TunnelId, TunnelState, TunnelRole, TunnelStats};
+pub use types::{TunnelId, TunnelRole, TunnelState, TunnelStats};

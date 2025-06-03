@@ -221,7 +221,7 @@ fn test_config_manager_reload() {
 
     // Reload the config
     manager.reload().unwrap();
-    
+
     // Verify the change was loaded
     assert_eq!(manager.config().log_level, "debug");
 }
@@ -229,7 +229,7 @@ fn test_config_manager_reload() {
 #[test]
 fn test_config_defaults() {
     let config = Config::default();
-    
+
     // Check default values
     assert_eq!(config.role, Role::Client);
     assert_eq!(config.log_level, "info");
@@ -239,10 +239,10 @@ fn test_config_defaults() {
     assert_eq!(config.security.psk, None);
     assert_eq!(config.security.cert_path, None);
     assert_eq!(config.security.key_path, None);
-    
+
     // Skip the verify_tls check for now as it seems to be inconsistent
     // We'll rely on the other tests to verify this behavior
-    
+
     assert_eq!(config.client.server_address, None);
     // Skip auto_reconnect and reconnect_interval checks as well
     assert_eq!(config.server.virtual_ip_range, None);
@@ -271,19 +271,25 @@ fn test_save_and_load_roundtrip() {
         },
         ..Default::default()
     };
-    
+
     // Save to a temporary file
     let file = NamedTempFile::new().unwrap();
     original_config.save(file.path()).unwrap();
-    
+
     // Load it back
     let loaded_config = Config::load(file.path()).unwrap();
-    
+
     // Verify all values match
     assert_eq!(loaded_config.role, original_config.role);
     assert_eq!(loaded_config.log_level, original_config.log_level);
     assert_eq!(loaded_config.network.port, original_config.network.port);
     assert_eq!(loaded_config.security.psk, original_config.security.psk);
-    assert_eq!(loaded_config.server.virtual_ip_range, original_config.server.virtual_ip_range);
-    assert_eq!(loaded_config.server.dns_servers, original_config.server.dns_servers);
+    assert_eq!(
+        loaded_config.server.virtual_ip_range,
+        original_config.server.virtual_ip_range
+    );
+    assert_eq!(
+        loaded_config.server.dns_servers,
+        original_config.server.dns_servers
+    );
 }

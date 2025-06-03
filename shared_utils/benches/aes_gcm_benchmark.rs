@@ -1,7 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use shared_utils::crypto::aes_gcm::AesGcmCipher;
-use rand::rngs::OsRng;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::RngCore;
+use rand::rngs::OsRng;
+use shared_utils::crypto::aes_gcm::AesGcmCipher;
 
 fn aes_gcm_benchmark(c: &mut Criterion) {
     let mut key = [0u8; 32];

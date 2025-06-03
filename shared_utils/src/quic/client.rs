@@ -12,11 +12,10 @@ use tracing::{debug, error, info};
 // For simplicity, I'll assume `configure_client_tls` is available from `crate::quic::transport` for now.
 use crate::quic::transport::configure_client_tls;
 
-
 /// Represents an active client-side QUIC connection (a single bidirectional stream).
 pub struct QuicClientConnection {
     conn_handle: Arc<quinn::Connection>, // To get local/peer addresses and close the main connection
-    local_s_addr: SocketAddr, // Store local socket address
+    local_s_addr: SocketAddr,            // Store local socket address
     send_stream: SendStream,
     recv_stream: RecvStream,
     cipher: Arc<AesGcmCipher>,
@@ -25,7 +24,10 @@ pub struct QuicClientConnection {
 #[async_trait]
 impl TraitConnection for QuicClientConnection {
     async fn send_data(&mut self, data: &[u8]) -> Result<(), TransportError> {
-        debug!("Encrypting {} bytes before sending via QUIC client connection", data.len());
+        debug!(
+            "Encrypting {} bytes before sending via QUIC client connection",
+            data.len()
+        );
         let encrypted_data = self.cipher.encrypt(data).map_err(|e| {
             TransportError::Generic(format!("Client-side encryption failed: {}", e))
         })?;
@@ -46,7 +48,10 @@ impl TraitConnection for QuicClientConnection {
         // A larger buffer (e.g., 8192) can reduce the number of reads for larger messages.
         match self.recv_stream.read_chunk(8192, false).await {
             Ok(Some(chunk)) => {
-                debug!("Received {} encrypted bytes from server via QUIC client connection", chunk.bytes.len());
+                debug!(
+                    "Received {} encrypted bytes from server via QUIC client connection",
+                    chunk.bytes.len()
+                );
                 let decrypted_data = self.cipher.decrypt(&chunk.bytes).map_err(|e| {
                     TransportError::Generic(format!("Client-side decryption failed: {}", e))
                 })?;
@@ -58,17 +63,26 @@ impl TraitConnection for QuicClientConnection {
                 Ok(None) // Stream gracefully closed
             }
             Err(quinn::ReadError::ConnectionLost(e)) => {
-                error!("QUIC connection lost while reading from stream (client): {}", e);
-                Err(TransportError::Connection(format!("Connection lost: {}", e)))
+                error!(
+                    "QUIC connection lost while reading from stream (client): {}",
+                    e
+                );
+                Err(TransportError::Connection(format!(
+                    "Connection lost: {}",
+                    e
+                )))
             }
             Err(quinn::ReadError::Reset(reason)) => {
-                info!("QUIC stream reset by server (client connection), reason code: {}", reason.into_inner());
-                 // Treat as graceful closure for now, or map to a specific error if needed
+                info!(
+                    "QUIC stream reset by server (client connection), reason code: {}",
+                    reason.into_inner()
+                );
+                // Treat as graceful closure for now, or map to a specific error if needed
                 Ok(None)
             }
             Err(quinn::ReadError::UnknownStream) => {
-                 error!("QUIC stream unknown (client connection)");
-                 Err(TransportError::Connection("Stream unknown".to_string()))
+                error!("QUIC stream unknown (client connection)");
+                Err(TransportError::Connection("Stream unknown".to_string()))
             }
             Err(e) => {
                 error!("Error reading from QUIC stream (client connection): {}", e);
@@ -118,7 +132,8 @@ impl TraitConnection for QuicClientConnection {
         // If the user wants to close the entire QUIC session, they might need a different method
         // on the `QuicClient` itself, or this `close` implies closing the underlying `quinn::Connection`.
         // Let's make it close the underlying connection for now.
-        self.conn_handle.close(0u32.into(), b"Client initiated close");
+        self.conn_handle
+            .close(0u32.into(), b"Client initiated close");
         info!("QUIC client connection (underlying quinn::Connection) closed.");
         Ok(())
     }
@@ -138,24 +153,25 @@ impl QuicClient {
         let client_tls_config =
             configure_client_tls().map_err(|e| TransportError::Configuration(e.to_string()))?;
 
-        let cipher = Arc::new(
-            AesGcmCipher::new(key)
-                .map_err(|e| TransportError::Configuration(format!("Failed to initialize cipher: {}", e)))?,
-        );
+        let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| {
+            TransportError::Configuration(format!("Failed to initialize cipher: {}", e))
+        })?);
 
         let mut client_config = ClientConfig::new(client_tls_config);
         let mut transport_config = quinn::TransportConfig::default();
 
-        let idle_timeout = std::time::Duration::from_secs(30)
-            .try_into()
-            .map_err(|_| TransportError::Configuration("Invalid timeout duration for QUIC".into()))?;
+        let idle_timeout = std::time::Duration::from_secs(30).try_into().map_err(|_| {
+            TransportError::Configuration("Invalid timeout duration for QUIC".into())
+        })?;
         transport_config.max_idle_timeout(Some(idle_timeout));
         transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
 
         client_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()) // Binds to any available local port
-            .map_err(|e| TransportError::Configuration(format!("Failed to create QUIC endpoint: {}", e)))?;
+            .map_err(|e| {
+                TransportError::Configuration(format!("Failed to create QUIC endpoint: {}", e))
+            })?;
         // Note: `set_default_client_config` is not needed if we pass config to `connect_with`
 
         Ok(Self {
@@ -168,7 +184,10 @@ impl QuicClient {
 
 #[async_trait]
 impl ClientTransport for QuicClient {
-    async fn connect(&self, server_address_str: &str) -> Result<Box<dyn TraitConnection>, TransportError> {
+    async fn connect(
+        &self,
+        server_address_str: &str,
+    ) -> Result<Box<dyn TraitConnection>, TransportError> {
         let server_addr: SocketAddr = server_address_str
             .parse()
             .map_err(|e| TransportError::AddrParse(e))?;
@@ -178,13 +197,18 @@ impl ClientTransport for QuicClient {
         let connecting = self
             .endpoint
             .connect_with(self.client_config.clone(), server_addr, "localhost") // Corrected argument order
-            .map_err(|e| TransportError::Connection(format!("Failed to initiate QUIC connection: {}", e)))?;
+            .map_err(|e| {
+                TransportError::Connection(format!("Failed to initiate QUIC connection: {}", e))
+            })?;
 
-        let new_conn = connecting
-            .await
-            .map_err(|e| TransportError::Connection(format!("QUIC connection attempt failed: {}", e)))?;
+        let new_conn = connecting.await.map_err(|e| {
+            TransportError::Connection(format!("QUIC connection attempt failed: {}", e))
+        })?;
 
-        info!("Successfully established QUIC connection to {}", server_addr);
+        info!(
+            "Successfully established QUIC connection to {}",
+            server_addr
+        );
 
         // Open a bidirectional stream for this connection
         let (send_stream, recv_stream) = new_conn.open_bi().await.map_err(|e| {
@@ -193,8 +217,9 @@ impl ClientTransport for QuicClient {
         info!("Opened bidirectional stream for QUIC client connection");
 
         // Get the local address from the endpoint that made the connection
-        let local_socket_addr = self.endpoint.local_addr()
-            .map_err(|e| TransportError::Generic(format!("Failed to get local endpoint address: {}", e)))?;
+        let local_socket_addr = self.endpoint.local_addr().map_err(|e| {
+            TransportError::Generic(format!("Failed to get local endpoint address: {}", e))
+        })?;
 
         let quic_connection = QuicClientConnection {
             conn_handle: Arc::new(new_conn),

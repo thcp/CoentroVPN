@@ -311,7 +311,8 @@ impl Session {
 
         // Now send the data with a new lock
         let result = {
-            let mut guard = match tunnel_clone.lock() { // Added mut
+            let mut guard = match tunnel_clone.lock() {
+                // Added mut
                 Ok(guard) => guard,
                 Err(e) => {
                     error!(

@@ -51,7 +51,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Connecting to server...");
     let mut connection = match client.connect(&server_addr.to_string()).await {
         Ok(conn_box) => {
-            info!("Connected to server successfully: {}", conn_box.peer_addr()?);
+            info!(
+                "Connected to server successfully: {}",
+                conn_box.peer_addr()?
+            );
             conn_box
         }
         Err(e) => {
@@ -75,12 +78,10 @@ async fn main() -> anyhow::Result<()> {
     // Try to receive an echo
     info!("Waiting for echo...");
     match connection.recv_data().await {
-        Ok(Some(data)) => {
-            match String::from_utf8(data) {
-                Ok(text) => info!("Received echo: {}", text),
-                Err(_) => info!("Received binary echo data"),
-            }
-        }
+        Ok(Some(data)) => match String::from_utf8(data) {
+            Ok(text) => info!("Received echo: {}", text),
+            Err(_) => info!("Received binary echo data"),
+        },
         Ok(None) => {
             info!("Connection closed by server while waiting for echo.");
         }

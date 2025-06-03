@@ -1,12 +1,12 @@
-use shared_utils::crypto::aes_gcm::AesGcmCipher;
-use shared_utils::proto::framing::{Frame, FrameType, FrameFlags, StreamFramer}; // Corrected import
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::{interval, Duration};
-use std::sync::Arc;
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
+use shared_utils::crypto::aes_gcm::AesGcmCipher;
+use shared_utils::proto::framing::{Frame, FrameFlags, FrameType, StreamFramer}; // Corrected import
 use std::error::Error;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, interval};
 
 const SERVER_ADDR: &str = "127.0.0.1:8080";
 const NUM_CLIENTS: usize = 100;
@@ -14,7 +14,11 @@ const TEST_DURATION_SECS: u64 = 30;
 const DATA_SIZE_BYTES: usize = 1024;
 
 // Server-side handler for a single client connection
-async fn handle_client_connection(mut socket: TcpStream, cipher: Arc<AesGcmCipher>, client_addr: std::net::SocketAddr) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn handle_client_connection(
+    mut socket: TcpStream,
+    cipher: Arc<AesGcmCipher>,
+    client_addr: std::net::SocketAddr,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     println!("Handling connection from: {}", client_addr);
     let mut stream_framer = StreamFramer::new(); // Each connection gets its own framer
     let mut buffer = vec![0; DATA_SIZE_BYTES * 2];
@@ -34,39 +38,63 @@ async fn handle_client_connection(mut socket: TcpStream, cipher: Arc<AesGcmCiphe
                                 while let Some(frame) = stream_framer.next_frame() {
                                     let response_payload = frame.payload.clone();
                                     // Explicitly handle Frame::new error
-                                    match Frame::new(FrameType::Data, FrameFlags::new(), response_payload) {
+                                    match Frame::new(
+                                        FrameType::Data,
+                                        FrameFlags::new(),
+                                        response_payload,
+                                    ) {
                                         Ok(response_frame_obj) => {
-                                            let framed_response = stream_framer.encode(&response_frame_obj);
+                                            let framed_response =
+                                                stream_framer.encode(&response_frame_obj);
                                             // Explicitly handle cipher.encrypt error
                                             match cipher.encrypt(&framed_response) {
                                                 Ok(encrypted_response) => {
-                                                    if let Err(e) = socket.write_all(&encrypted_response).await {
-                                                        eprintln!("Error writing response to {}: {}", client_addr, e);
+                                                    if let Err(e) =
+                                                        socket.write_all(&encrypted_response).await
+                                                    {
+                                                        eprintln!(
+                                                            "Error writing response to {}: {}",
+                                                            client_addr, e
+                                                        );
                                                         // Propagate the error to ensure the handler's error is logged by the spawner
-                                                        return Err(Box::new(e)); 
+                                                        return Err(Box::new(e));
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("Server: Error encrypting response for {}: {}", client_addr, e);
+                                                    eprintln!(
+                                                        "Server: Error encrypting response for {}: {}",
+                                                        client_addr, e
+                                                    );
                                                     // Consider breaking the inner loop or returning if encryption fails
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            eprintln!("Server: Error creating response frame for {}: {}", client_addr, e);
+                                            eprintln!(
+                                                "Server: Error creating response frame for {}: {}",
+                                                client_addr, e
+                                            );
                                             // Consider breaking the inner loop or returning
                                         }
                                     }
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Server: Error processing framed data from {}: {}", client_addr, e);
+                                eprintln!(
+                                    "Server: Error processing framed data from {}: {}",
+                                    client_addr, e
+                                );
                                 // This error implies that the data, even after successful decryption, was not valid frame data.
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Server: Error decrypting data from {}: {} ({} bytes received)", client_addr, e, encrypted_data_received.len());
+                        eprintln!(
+                            "Server: Error decrypting data from {}: {} ({} bytes received)",
+                            client_addr,
+                            e,
+                            encrypted_data_received.len()
+                        );
                         // This means the raw encrypted data could not be decrypted.
                         // This is a more fundamental issue than a framing error after successful decryption.
                     }
@@ -96,7 +124,10 @@ async fn run_server(cipher: Arc<AesGcmCipher>) -> Result<(), Box<dyn Error + Sen
     }
 }
 
-async fn run_client(id: usize, cipher: Arc<AesGcmCipher>) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn run_client(
+    id: usize,
+    cipher: Arc<AesGcmCipher>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     match TcpStream::connect(SERVER_ADDR).await {
         Ok(mut stream) => {
             println!("Client {} connected to {}", id, SERVER_ADDR);
@@ -107,7 +138,8 @@ async fn run_client(id: usize, cipher: Arc<AesGcmCipher>) -> Result<(), Box<dyn 
             let mut client_response_framer = StreamFramer::new(); // Client's own framer for receiving responses (process_data takes &mut self)
 
             let mut send_interval = interval(Duration::from_millis(100));
-            let test_end_time = tokio::time::Instant::now() + Duration::from_secs(TEST_DURATION_SECS);
+            let test_end_time =
+                tokio::time::Instant::now() + Duration::from_secs(TEST_DURATION_SECS);
             let mut packets_sent = 0;
             let mut packets_received = 0;
             let mut read_buffer = vec![0; DATA_SIZE_BYTES * 2]; // Buffer for reading responses
@@ -159,7 +191,10 @@ async fn run_client(id: usize, cipher: Arc<AesGcmCipher>) -> Result<(), Box<dyn 
                     }
                 }
             }
-            println!("Client {}: Test finished. Sent: {}, Received: {}", id, packets_sent, packets_received);
+            println!(
+                "Client {}: Test finished. Sent: {}, Received: {}",
+                id, packets_sent, packets_received
+            );
         }
         Err(e) => {
             eprintln!("Client {}: Failed to connect to server: {}", id, e);
@@ -177,7 +212,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Start the server in a separate task
     let server_cipher_clone = Arc::clone(&cipher);
     tokio::spawn(async move {
-        if let Err(e) = run_server(server_cipher_clone).await { // Removed framer from here
+        if let Err(e) = run_server(server_cipher_clone).await {
+            // Removed framer from here
             eprintln!("Server error: {}", e);
         }
     });
@@ -189,7 +225,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         let client_cipher_clone = Arc::clone(&cipher);
         // Client creates its own StreamFramer internally now
         let handle = tokio::spawn(async move {
-            if let Err(e) = run_client(i, client_cipher_clone).await { // Removed framer from here
+            if let Err(e) = run_client(i, client_cipher_clone).await {
+                // Removed framer from here
                 eprintln!("Client {} error: {}", i, e);
             }
         });

@@ -12,7 +12,7 @@ const _TAG_SIZE: usize = 16; // AES-GCM standard tag size (128 bits)
 // #[derive(Debug)] // Cannot derive Debug as Aes256Gcm doesn't implement it
 pub struct AesGcmCipher {
     cipher: Aes256Gcm,
-    nonce_prefix: [u8; 4], // Random prefix per cipher instance
+    nonce_prefix: [u8; 4],    // Random prefix per cipher instance
     nonce_counter: AtomicU64, // Counter for nonces
 }
 
@@ -64,14 +64,16 @@ impl AesGcmCipher {
         // Construct nonce: 4-byte prefix | 8-byte counter (big-endian)
         nonce_bytes[0..4].copy_from_slice(&self.nonce_prefix);
         nonce_bytes[4..12].copy_from_slice(&count.to_be_bytes());
-        
+
         // Check for counter wrap-around. Extremely unlikely with u64.
         if count == u64::MAX {
             // This is a catastrophic event for this cipher instance.
             // Depending on policy, one might panic, log an error, or try to re-key.
             // For now, we'll rely on the fact that u64::MAX is astronomically large.
             // A production system might need a more robust strategy if such longevity is expected.
-            eprintln!("CRITICAL: AES-GCM nonce counter has wrapped around! Key re-use is imminent if not re-keyed.");
+            eprintln!(
+                "CRITICAL: AES-GCM nonce counter has wrapped around! Key re-use is imminent if not re-keyed."
+            );
         }
         nonce_bytes
     }
@@ -218,7 +220,9 @@ mod tests {
         let nonce1_bytes_slice = &encrypted1[0..NONCE_SIZE];
         let prefix1_slice = &nonce1_bytes_slice[0..4];
         let counter1_slice = &nonce1_bytes_slice[4..NONCE_SIZE];
-        let counter1_array: [u8; 8] = counter1_slice.try_into().expect("Counter slice has wrong length");
+        let counter1_array: [u8; 8] = counter1_slice
+            .try_into()
+            .expect("Counter slice has wrong length");
         let counter1_val = u64::from_be_bytes(counter1_array);
 
         // Second encryption
@@ -226,20 +230,37 @@ mod tests {
         let nonce2_bytes_slice = &encrypted2[0..NONCE_SIZE];
         let prefix2_slice = &nonce2_bytes_slice[0..4];
         let counter2_slice = &nonce2_bytes_slice[4..NONCE_SIZE];
-        let counter2_array: [u8; 8] = counter2_slice.try_into().expect("Counter slice has wrong length");
+        let counter2_array: [u8; 8] = counter2_slice
+            .try_into()
+            .expect("Counter slice has wrong length");
         let counter2_val = u64::from_be_bytes(counter2_array);
-        
+
         // Overall nonces should be different
-        assert_ne!(nonce1_bytes_slice, nonce2_bytes_slice, "Nonces from two consecutive encryptions on the same instance should be different");
+        assert_ne!(
+            nonce1_bytes_slice, nonce2_bytes_slice,
+            "Nonces from two consecutive encryptions on the same instance should be different"
+        );
 
         // Prefixes should be the same for the same cipher instance
-        assert_eq!(prefix1_slice, prefix2_slice, "Nonce prefix should be the same for the same cipher instance");
-        
+        assert_eq!(
+            prefix1_slice, prefix2_slice,
+            "Nonce prefix should be the same for the same cipher instance"
+        );
+
         // Counter parts should be different
-        assert_ne!(counter1_slice, counter2_slice, "Nonce counter part should differ");
+        assert_ne!(
+            counter1_slice, counter2_slice,
+            "Nonce counter part should differ"
+        );
 
         // Specifically, counter2 should be counter1 + 1
-        assert_eq!(counter2_val, counter1_val + 1, "Nonce counter should increment by 1. Got {} and {}", counter1_val, counter2_val);
+        assert_eq!(
+            counter2_val,
+            counter1_val + 1,
+            "Nonce counter should increment by 1. Got {} and {}",
+            counter1_val,
+            counter2_val
+        );
 
         // Decrypt to ensure messages are still valid
         let decrypted1 = cipher.decrypt(&encrypted1).unwrap();
@@ -261,11 +282,18 @@ mod tests {
             let encrypted_data = cipher.encrypt(plaintext).unwrap();
             let nonce_bytes_slice = &encrypted_data[0..NONCE_SIZE];
             let counter_slice = &nonce_bytes_slice[4..NONCE_SIZE];
-            let counter_array: [u8; 8] = counter_slice.try_into().expect("Counter slice has wrong length");
+            let counter_array: [u8; 8] = counter_slice
+                .try_into()
+                .expect("Counter slice has wrong length");
             let current_counter_val = u64::from_be_bytes(counter_array);
 
             if let Some(last_val) = last_counter_val {
-                assert_eq!(current_counter_val, last_val + 1, "Counter should increment by 1 on iteration {}", i);
+                assert_eq!(
+                    current_counter_val,
+                    last_val + 1,
+                    "Counter should increment by 1 on iteration {}",
+                    i
+                );
             } else {
                 // For the first encryption, counter should be 0 (as fetch_add returns old value)
                 assert_eq!(current_counter_val, 0, "Initial counter value should be 0");

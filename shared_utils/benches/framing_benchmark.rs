@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use shared_utils::proto::framing::{Frame, FrameType, FrameFlags, FrameEncoder, FrameDecoder};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use shared_utils::proto::framing::{Frame, FrameDecoder, FrameEncoder, FrameFlags, FrameType};
 use tokio::runtime::Runtime;
 
 fn framing_benchmark(c: &mut Criterion) {
@@ -8,7 +8,8 @@ fn framing_benchmark(c: &mut Criterion) {
 
     c.bench_function("frame_data", |b| {
         b.iter(|| {
-            let frame = Frame::new(FrameType::Data, FrameFlags::new(), black_box(data.clone())).unwrap();
+            let frame =
+                Frame::new(FrameType::Data, FrameFlags::new(), black_box(data.clone())).unwrap();
             encoder.encode(&frame);
         })
     });
@@ -20,7 +21,8 @@ fn framing_benchmark(c: &mut Criterion) {
         // Each iteration will get its own FrameDecoder
         b.to_async(Runtime::new().unwrap()).iter_batched(
             || framed_data.clone(), // Setup: clone the data for this batch
-            |mut data_for_iteration| async move { // Routine: receives cloned data
+            |mut data_for_iteration| async move {
+                // Routine: receives cloned data
                 let mut decoder = FrameDecoder::new();
                 decoder.decode(black_box(&mut data_for_iteration)).unwrap();
             },

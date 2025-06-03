@@ -1,8 +1,8 @@
 // Common QUIC transport helper functions, primarily for TLS configuration.
 
 use crate::transport::TransportError; // Use the new central TransportError
-use std::sync::Arc;
-use rustls; // Keep rustls import for types used in signatures
+use rustls;
+use std::sync::Arc; // Keep rustls import for types used in signatures
 
 // The old QuicTransport trait, TransportError enum, TransportResult type,
 // and TransportMessage enum have been removed as they are superseded by
@@ -10,7 +10,8 @@ use rustls; // Keep rustls import for types used in signatures
 
 /// Create a self-signed certificate for testing.
 /// Returns the certificate and private key.
-pub fn generate_self_signed_cert() -> Result<(rustls::Certificate, rustls::PrivateKey), TransportError> {
+pub fn generate_self_signed_cert()
+-> Result<(rustls::Certificate, rustls::PrivateKey), TransportError> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).map_err(|e| {
         TransportError::Configuration(format!("Failed to generate certificate: {}", e))
     })?;
@@ -19,7 +20,7 @@ pub fn generate_self_signed_cert() -> Result<(rustls::Certificate, rustls::Priva
     let cert_der = cert.serialize_der().map_err(|e| {
         TransportError::Configuration(format!("Failed to serialize certificate: {}", e))
     })?;
-    
+
     Ok((rustls::Certificate(cert_der), rustls::PrivateKey(key_der)))
 }
 

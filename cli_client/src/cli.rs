@@ -129,7 +129,10 @@ fn start_server(config: &Config) -> CliResult<()> {
         .map_err(CliError::IoError)?;
 
     if !status.success() {
-        error!("Core engine process exited with non-zero status: {:?}", status);
+        error!(
+            "Core engine process exited with non-zero status: {:?}",
+            status
+        );
         return Err(CliError::IoError(std::io::Error::new(
             std::io::ErrorKind::Other,
             format!("Core engine process failed: {:?}", status),
@@ -159,7 +162,10 @@ fn start_client(config: &Config) -> CliResult<()> {
         .map_err(CliError::IoError)?;
 
     if !status.success() {
-        error!("Core engine process exited with non-zero status: {:?}", status);
+        error!(
+            "Core engine process exited with non-zero status: {:?}",
+            status
+        );
         return Err(CliError::IoError(std::io::Error::new(
             std::io::ErrorKind::Other,
             format!("Core engine process failed: {:?}", status),

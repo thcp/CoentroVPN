@@ -62,7 +62,10 @@ pub struct TcpClientStub;
 
 #[async_trait]
 impl ClientTransport for TcpClientStub {
-    async fn connect(&self, server_address: &str) -> Result<Box<dyn TraitConnection>, TransportError> {
+    async fn connect(
+        &self,
+        server_address: &str,
+    ) -> Result<Box<dyn TraitConnection>, TransportError> {
         warn!("TCP connect to {}: Unimplemented", server_address);
         Err(TransportError::Generic("Unimplemented".to_string()))
     }

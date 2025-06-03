@@ -171,7 +171,8 @@ impl TunnelConfig {
         // Check that we have either a PSK or TLS credentials
         if self.psk.is_none() && (self.cert_path.is_none() || self.key_path.is_none()) {
             return Err(TunnelError::Config(
-                "Either PSK or TLS credentials (cert_path and key_path) must be provided".to_string(),
+                "Either PSK or TLS credentials (cert_path and key_path) must be provided"
+                    .to_string(),
             ));
         }
 
@@ -184,7 +185,7 @@ impl TunnelConfig {
             crate::config::Role::Client => TunnelRole::Client,
             crate::config::Role::Server => TunnelRole::Server,
         };
-        
+
         let mut tunnel_config = TunnelConfig {
             role,
             ..Default::default()
@@ -195,12 +196,9 @@ impl TunnelConfig {
             TunnelRole::Client => {
                 if let Some(server_address) = &config.client.server_address {
                     // Parse server address
-                    let addr = server_address
-                        .parse::<SocketAddr>()
-                        .map_err(|_| TunnelError::Config(format!(
-                            "Invalid server address: {}",
-                            server_address
-                        )))?;
+                    let addr = server_address.parse::<SocketAddr>().map_err(|_| {
+                        TunnelError::Config(format!("Invalid server address: {}", server_address))
+                    })?;
 
                     tunnel_config.remote_addr = Some(addr);
                 } else {
@@ -213,9 +211,7 @@ impl TunnelConfig {
                 // Construct bind address from config
                 let addr = format!("{}:{}", config.network.bind_address, config.network.port)
                     .parse::<SocketAddr>()
-                    .map_err(|e| {
-                        TunnelError::Config(format!("Invalid bind address: {}", e))
-                    })?;
+                    .map_err(|e| TunnelError::Config(format!("Invalid bind address: {}", e)))?;
 
                 tunnel_config.bind_addr = Some(addr);
             }
@@ -224,7 +220,7 @@ impl TunnelConfig {
         // Set security parameters
         if let Some(psk) = &config.security.psk {
             // Derive a 32-byte key from the PSK string using SHA-256
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(psk.as_bytes());
             let key = hasher.finalize().to_vec();
@@ -238,7 +234,8 @@ impl TunnelConfig {
         // Set client-specific parameters
         if let TunnelRole::Client = tunnel_config.role {
             tunnel_config.max_reconnect_attempts = if config.client.auto_reconnect { 5 } else { 0 };
-            tunnel_config.reconnect_interval = Duration::from_secs(config.client.reconnect_interval);
+            tunnel_config.reconnect_interval =
+                Duration::from_secs(config.client.reconnect_interval);
         }
 
         // Validate the configuration

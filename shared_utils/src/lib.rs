@@ -19,8 +19,8 @@ pub use config::{Config, ConfigManager, Role};
 pub use crypto::aes_gcm::AesGcmCipher;
 pub use proto::framing;
 // Removed QuicTransport from re-export
-pub use quic::{QuicClient, QuicServer}; 
+pub use quic::{QuicClient, QuicServer};
 pub use tunnel::{
-    TunnelBootstrapper, ClientBootstrapper, ServerBootstrapper,
-    TunnelConfig, TunnelManager, TunnelError, TunnelResult,
+    ClientBootstrapper, ServerBootstrapper, TunnelBootstrapper, TunnelConfig, TunnelError,
+    TunnelManager, TunnelResult,
 };

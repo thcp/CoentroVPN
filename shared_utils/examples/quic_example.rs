@@ -12,7 +12,7 @@ use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::logging;
 use shared_utils::quic::{QuicClient, QuicServer};
 // Import new transport traits
-use shared_utils::transport::{ClientTransport, ServerTransport, Listener as TraitListener}; // Removed unused Connection as TraitConnection
+use shared_utils::transport::{ClientTransport, Listener as TraitListener, ServerTransport}; // Removed unused Connection as TraitConnection
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tokio::time;
@@ -46,7 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         match listener.accept().await {
             Ok(mut conn) => {
-                info!("Server accepted connection from: {}", conn.peer_addr().unwrap_or(server_addr));
+                info!(
+                    "Server accepted connection from: {}",
+                    conn.peer_addr().unwrap_or(server_addr)
+                );
                 loop {
                     match conn.recv_data().await {
                         Ok(Some(data)) => {

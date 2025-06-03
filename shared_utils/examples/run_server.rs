@@ -12,7 +12,7 @@ use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::logging;
 use shared_utils::quic::QuicServer;
 // Import new transport traits
-use shared_utils::transport::{ServerTransport, Listener as TraitListener}; // Removed unused Connection as TraitConnection
+use shared_utils::transport::{Listener as TraitListener, ServerTransport}; // Removed unused Connection as TraitConnection
 use std::env;
 use std::net::SocketAddr;
 use tracing::{Level, info};
@@ -60,7 +60,9 @@ async fn main() -> anyhow::Result<()> {
                             Ok(text) => {
                                 info!("Received message: {}", text);
                                 // Echo back
-                                if let Err(e) = conn.send_data(format!("Echo: {}", text).as_bytes()).await {
+                                if let Err(e) =
+                                    conn.send_data(format!("Echo: {}", text).as_bytes()).await
+                                {
                                     info!("Error sending echo: {}", e);
                                     break;
                                 }

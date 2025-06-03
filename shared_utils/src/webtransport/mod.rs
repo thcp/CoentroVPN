@@ -32,7 +32,9 @@ impl TraitConnection for WebTransportConnectionStub {
         // This is problematic as the trait expects SocketAddr.
         // A real implementation would need to decide how to handle this.
         // For a stub, we might return a loopback address or error.
-        "127.0.0.1:0".parse().map_err(|e| TransportError::AddrParse(e))
+        "127.0.0.1:0"
+            .parse()
+            .map_err(|e| TransportError::AddrParse(e))
     }
 
     fn local_addr(&self) -> Result<SocketAddr, TransportError> {
@@ -61,8 +63,10 @@ impl TraitListener for WebTransportListenerStub {
     }
 
     fn local_addr(&self) -> Result<SocketAddr, TransportError> {
-         self.local_addr.ok_or_else(|| {
-            TransportError::Generic("Local address not available for WebTransport listener stub".to_string())
+        self.local_addr.ok_or_else(|| {
+            TransportError::Generic(
+                "Local address not available for WebTransport listener stub".to_string(),
+            )
         })
     }
 }
@@ -93,10 +97,9 @@ impl ServerTransport for WebTransportServerStub {
             .map_err(|e| TransportError::Configuration(format!("Invalid URL: {}", e)))?;
         let host = parsed_url.host_str().unwrap_or("localhost");
         let port = parsed_url.port().unwrap_or(443); // Default HTTPS port
-        
+
         let socket_addr_str = format!("{}:{}", host, port);
         let socket_addr: Option<SocketAddr> = socket_addr_str.parse().ok();
-
 
         Ok(WebTransportListenerStub {
             listen_url: local_url.to_string(),

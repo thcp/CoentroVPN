@@ -14,7 +14,10 @@ use shared_utils::proto::framing::{Frame, StreamFramer};
 // Updated imports for the new transport traits
 use shared_utils::quic::{QuicClient, QuicServer}; // Concrete types
 use shared_utils::transport::{
-    ClientTransport, Connection as TraitConnection, Listener as TraitListener, ServerTransport,
+    ClientTransport,
+    Connection as TraitConnection,
+    Listener as TraitListener,
+    ServerTransport,
     TransportError as NewTransportError, // Alias to avoid conflict
 };
 
@@ -148,10 +151,15 @@ impl Tunnel {
         }
     }
 
-    pub fn id(&self) -> &str { &self.id }
-    pub fn state(&self) -> TunnelState { self.state }
-    pub fn address(&self) -> SocketAddr { self.address }
-
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn state(&self) -> TunnelState {
+        self.state
+    }
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
 
     #[instrument(level = "debug", skip(self, cipher))]
     pub fn set_cipher(&mut self, cipher: AesGcmCipher) {
@@ -164,7 +172,9 @@ impl Tunnel {
     pub async fn initialize_client(&mut self) -> Result<(), TunnelError> {
         info!(tunnel_id = %self.id, "Initializing client tunnel");
         if !matches!(self.provider, TransportProvider::Client(_)) {
-            return Err(TunnelError::Transport(NewTransportError::Generic("Not a client tunnel provider".to_string())));
+            return Err(TunnelError::Transport(NewTransportError::Generic(
+                "Not a client tunnel provider".to_string(),
+            )));
         }
         self.state = TunnelState::Connecting;
         let client = match &self.provider {
@@ -183,7 +193,9 @@ impl Tunnel {
     pub async fn start_server_listening(&mut self) -> Result<(), TunnelError> {
         info!(tunnel_id = %self.id, "Starting server tunnel listening");
         if !matches!(self.provider, TransportProvider::Server(_)) {
-            return Err(TunnelError::Transport(NewTransportError::Generic("Not a server tunnel provider".to_string())));
+            return Err(TunnelError::Transport(NewTransportError::Generic(
+                "Not a server tunnel provider".to_string(),
+            )));
         }
         self.state = TunnelState::Listening;
         let server = match &self.provider {
@@ -211,10 +223,11 @@ impl Tunnel {
             self.state = TunnelState::Connected;
             Ok(())
         } else {
-            Err(TunnelError::Transport(NewTransportError::Generic("Server listener not available".to_string())))
+            Err(TunnelError::Transport(NewTransportError::Generic(
+                "Server listener not available".to_string(),
+            )))
         }
     }
-
 
     /// Send application data through the tunnel (encrypts and frames)
     #[instrument(level = "debug", skip(self, data), fields(data_len = data.len()))]
@@ -224,18 +237,20 @@ impl Tunnel {
             return Err(TunnelError::NotConnected);
         }
         let conn = self.connection.as_mut().ok_or(TunnelError::NotConnected)?;
-        
+
         debug!(tunnel_id = %self.id, data_len = data.len(), "Sending application data");
         let payload = if let Some(cipher) = &self.cipher {
             trace!(tunnel_id = %self.id, "Encrypting data");
-            cipher.encrypt(data).map_err(|e| TunnelError::Encryption(e.to_string()))?
+            cipher
+                .encrypt(data)
+                .map_err(|e| TunnelError::Encryption(e.to_string()))?
         } else {
             data.to_vec()
         };
         let frame = Frame::new_data(payload).map_err(|e| TunnelError::Framing(e.to_string()))?;
         let framer = self.framer.lock().await;
         let encoded = framer.encode(&frame);
-        
+
         conn.send_data(&encoded).await?;
         debug!(tunnel_id = %self.id, frame_type = ?frame.frame_type, "Data sent successfully");
         Ok(())
@@ -251,7 +266,7 @@ impl Tunnel {
         let conn = self.connection.as_mut().ok_or(TunnelError::NotConnected)?;
 
         debug!(tunnel_id = %self.id, "Receiving data from tunnel");
-        
+
         // Loop to process incoming data until a full application frame is available
         loop {
             // Check if framer already has a complete frame
@@ -262,7 +277,9 @@ impl Tunnel {
                 drop(framer_guard);
                 return if let Some(cipher) = &self.cipher {
                     trace!(tunnel_id = %self.id, "Decrypting data");
-                    cipher.decrypt(&frame.payload).map_err(|e| TunnelError::Encryption(e.to_string()))
+                    cipher
+                        .decrypt(&frame.payload)
+                        .map_err(|e| TunnelError::Encryption(e.to_string()))
                 } else {
                     Ok(frame.payload)
                 };
@@ -275,15 +292,19 @@ impl Tunnel {
                 Ok(Some(raw_data)) => {
                     trace!(tunnel_id = %self.id, bytes_recvd = raw_data.len(), "Received raw data chunk from transport");
                     let mut framer_guard = self.framer.lock().await;
-                    framer_guard.process_data(&raw_data).map_err(|e| TunnelError::Framing(e.to_string()))?;
+                    framer_guard
+                        .process_data(&raw_data)
+                        .map_err(|e| TunnelError::Framing(e.to_string()))?;
                     // Loop will continue and check next_frame() again
                 }
-                Ok(None) => { // Connection closed gracefully by peer
+                Ok(None) => {
+                    // Connection closed gracefully by peer
                     warn!(tunnel_id = %self.id, "Connection closed by peer while receiving data");
                     self.state = TunnelState::Closed;
                     return Err(TunnelError::Closed);
                 }
-                Err(e) => { // Transport error
+                Err(e) => {
+                    // Transport error
                     error!(tunnel_id = %self.id, error = ?e, "Transport error receiving data");
                     self.state = TunnelState::Failed;
                     return Err(TunnelError::Transport(e));
@@ -304,7 +325,8 @@ impl Tunnel {
 
         if let Some(mut conn) = self.connection.take() {
             // Try to send a control frame indicating closure (best effort)
-            let frame = Frame::new_control(b"close".to_vec()).map_err(|e| TunnelError::Framing(e.to_string()))?;
+            let frame = Frame::new_control(b"close".to_vec())
+                .map_err(|e| TunnelError::Framing(e.to_string()))?;
             let framer = self.framer.lock().await;
             let encoded = framer.encode(&frame);
             if let Err(e) = conn.send_data(&encoded).await {
@@ -313,7 +335,7 @@ impl Tunnel {
             // Now close the transport connection
             conn.close().await?;
         }
-        
+
         self.state = TunnelState::Closed;
         info!(tunnel_id = %self.id, "Tunnel closed");
         Ok(())
@@ -326,9 +348,9 @@ impl Drop for Tunnel {
         // Explicit close() should be called for graceful shutdown.
         // If connection is still Some here, it means close was not called.
         if self.connection.is_some() {
-             warn!(tunnel_id = %self.id, "Tunnel dropped without explicit close, connection might linger.");
+            warn!(tunnel_id = %self.id, "Tunnel dropped without explicit close, connection might linger.");
         } else {
-             info!(tunnel_id = %self.id, "Tunnel being dropped");
+            info!(tunnel_id = %self.id, "Tunnel being dropped");
         }
     }
 }
