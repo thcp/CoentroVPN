@@ -90,8 +90,9 @@ impl TraitConnection for QuicServerConnection {
         // Closing this TraitConnection means this specific stream is done.
         // The actual QUIC connection might stay open for other streams if the design supported it,
         // or be closed by the listener if this was the only/primary interaction.
-        // For simplicity, we assume this stream's closure doesn't automatically close the quinn::Connection.
-        // If it should, `self.conn_handle.close(...)` would be called here.
+        // For consistency with client and to ensure prompt cleanup, explicitly close the underlying connection.
+        self.conn_handle.close(0u32.into(), b"Server initiated stream close");
+        info!("QUIC server connection (underlying quinn::Connection) closed.");
         Ok(())
     }
 }
