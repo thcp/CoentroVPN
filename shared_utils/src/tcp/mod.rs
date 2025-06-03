@@ -80,9 +80,7 @@ impl ServerTransport for TcpServerStub {
 
     async fn listen(&self, local_address: &str) -> Result<Self::Listener, TransportError> {
         warn!("TCP listen on {}: Unimplemented", local_address);
-        let addr: SocketAddr = local_address
-            .parse()
-            .map_err(TransportError::AddrParse)?;
+        let addr: SocketAddr = local_address.parse().map_err(TransportError::AddrParse)?;
         Ok(TcpListenerStub { local_addr: addr })
     }
 }

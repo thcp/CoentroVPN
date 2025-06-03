@@ -31,9 +31,7 @@ impl TraitConnection for WebTransportConnectionStub {
         // This is problematic as the trait expects SocketAddr.
         // A real implementation would need to decide how to handle this.
         // For a stub, we might return a loopback address or error.
-        "127.0.0.1:0"
-            .parse()
-            .map_err(TransportError::AddrParse)
+        "127.0.0.1:0".parse().map_err(TransportError::AddrParse)
     }
 
     fn local_addr(&self) -> Result<SocketAddr, TransportError> {
