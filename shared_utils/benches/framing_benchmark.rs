@@ -21,10 +21,10 @@ fn framing_benchmark(c: &mut Criterion) {
         // Each iteration will get its own FrameDecoder
         b.to_async(Runtime::new().unwrap()).iter_batched(
             || framed_data.clone(), // Setup: clone the data for this batch
-            |mut data_for_iteration| async move {
+            |data_for_iteration| async move {
                 // Routine: receives cloned data
                 let mut decoder = FrameDecoder::new();
-                decoder.decode(black_box(&mut data_for_iteration)).unwrap();
+                decoder.decode(black_box(&data_for_iteration)).unwrap();
             },
             criterion::BatchSize::SmallInput, // Or PerIteration if cloning is very cheap / part of the bench
         );

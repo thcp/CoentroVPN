@@ -426,7 +426,7 @@ async fn test_multiple_concurrent_client_sessions() {
     let mut client_tasks = Vec::new();
 
     for i in 0..MAX_CONCURRENT_CLIENTS {
-        let client_key = key.clone();
+        let client_key = key;
         let client_addr = bound_addr;
 
         let task = tokio::spawn(async move {
