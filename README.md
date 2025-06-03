@@ -63,24 +63,78 @@ cd dashboard && npm run test
 
 ## 🚀 Running the Demo
 
-### Building the Project
+### Complete System Demo (Docker Compose)
+The easiest way to run a complete demo of CoentroVPN with all components:
+
 ```bash
-cargo build --release
+docker-compose up --build
 ```
 
-### Starting the Server
+This will start:
+- The VPN core engine
+- Management API backend
+- PostgreSQL database
+- React dashboard frontend
+
+Access the dashboard at: http://localhost:3000
+
+### Manual Component Setup
+
+#### 1. Build All Components
 ```bash
-cargo run --bin server -- --listen 127.0.0.1:4433
+cargo build --release --workspace
 ```
 
-### Connecting with a Client
+#### 2. Start the Core VPN Engine
 ```bash
-cargo run --bin client -- --connect 127.0.0.1:4433
+cd core_engine
+cargo run --release
+```
+
+You can also start the server using the CLI client:
+```bash
+# First, create a server configuration
+cp config.toml config.server.toml
+# Edit the configuration to set role = "server"
+# Then run the server
+cd cli_client
+cargo run --release -- --config ../config.server.toml server
+```
+
+#### 3. Start the Management API
+```bash
+cd management_api
+cargo run --release
+```
+
+#### 4. Launch the Dashboard
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+#### 5. Connect with CLI Client
+```bash
+cd cli_client
+cargo run --release
+```
+
+You can also specify a custom configuration file:
+```bash
+cd cli_client
+cargo run --release -- --config config.custom.toml
+```
+
+#### 6. Connect with GUI Client
+```bash
+cd gui_client
+cargo run --release
 ```
 
 ### Running E2E Tests
 ```bash
-cargo test --test e2e
+cargo run --example e2e_test
 ```
 
 The E2E tests demonstrate the full functionality of CoentroVPN by:
@@ -90,6 +144,21 @@ The E2E tests demonstrate the full functionality of CoentroVPN by:
 4. Verifying message integrity and encryption
 
 The tests also verify tamper resistance by attempting to decrypt messages with incorrect keys.
+
+### Demo Configuration
+You can customize the demo by editing the `config.toml` file:
+
+```bash
+# View the default configuration
+cat config.toml
+
+# Make a custom configuration
+cp config.toml config.custom.toml
+nano config.custom.toml
+
+# Run with custom configuration (specify which binary to run)
+cargo run --release --bin cli_client -- --config config.custom.toml
+```
 
 ---
 
