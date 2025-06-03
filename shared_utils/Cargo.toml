@@ -28,6 +28,7 @@ serde = { version = "1.0.193", features = ["derive"] }
 aes-gcm = "0.10.3" # For AES-GCM encryption
 rand = "0.8.5"    # For nonce generation
 anyhow = "1.0.79"  # For flexible error handling
+uuid = { version = "1.4.1", features = ["v4"] } # For unique identifiers
 
 # Filesystem
 dirs = "5.0.1"

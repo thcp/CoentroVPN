@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Server will listen on {}", server_addr);
 
     // Start the server in a separate task
-    let server_key = key.clone();
+    let server_key = key;
     let _server_handle = tokio::spawn(async move { run_server(server_addr, &server_key).await });
 
     // Give the server a moment to start

@@ -120,13 +120,23 @@ fn start_server(config: &Config) -> CliResult<()> {
         return Err(CliError::ConfigError(err));
     }
 
-    // TODO: Implement server startup logic
-    // This would typically involve calling into the core_engine crate
-    // to start the server with the provided configuration
+    // Start the server using the core_engine
+    // In a real implementation, we would use a proper IPC mechanism
+    // For now, we'll just spawn the core_engine process
+    let status = std::process::Command::new("cargo")
+        .args(["run", "--bin", "core_engine"])
+        .status()
+        .map_err(CliError::IoError)?;
+
+    if !status.success() {
+        error!("Core engine process exited with non-zero status: {:?}", status);
+        return Err(CliError::IoError(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Core engine process failed: {:?}", status),
+        )));
+    }
 
     info!("CoentroVPN server started successfully");
-
-    // For now, just return Ok since we don't have the actual server implementation
     Ok(())
 }
 
@@ -140,12 +150,22 @@ fn start_client(config: &Config) -> CliResult<()> {
         return Err(CliError::ConfigError(err));
     }
 
-    // TODO: Implement client startup logic
-    // This would typically involve calling into the core_engine crate
-    // to start the client with the provided configuration
+    // Start the client using the core_engine
+    // In a real implementation, we would use a proper IPC mechanism
+    // For now, we'll just spawn the core_engine process
+    let status = std::process::Command::new("cargo")
+        .args(["run", "--bin", "core_engine"])
+        .status()
+        .map_err(CliError::IoError)?;
+
+    if !status.success() {
+        error!("Core engine process exited with non-zero status: {:?}", status);
+        return Err(CliError::IoError(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Core engine process failed: {:?}", status),
+        )));
+    }
 
     info!("CoentroVPN client started successfully");
-
-    // For now, just return Ok since we don't have the actual client implementation
     Ok(())
 }
