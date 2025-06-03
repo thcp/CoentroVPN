@@ -278,7 +278,7 @@ impl ServerTransport for QuicServer {
         // Or, parse local_address_str and use it. Let's parse it.
         let listen_addr: SocketAddr = local_address_str
             .parse()
-            .map_err(|e| TransportError::AddrParse(e))?;
+            .map_err(TransportError::AddrParse)?;
 
         if listen_addr != self.bind_addr {
             warn!(
@@ -288,9 +288,9 @@ impl ServerTransport for QuicServer {
         }
 
         let endpoint = Endpoint::server(self.server_config.clone(), listen_addr)
-            .map_err(|e| TransportError::Io(e))?; // quinn::Endpoint::server returns std::io::Error
+            .map_err(TransportError::Io)?; // quinn::Endpoint::server returns std::io::Error
 
-        let actual_local_addr = endpoint.local_addr().map_err(|e| TransportError::Io(e))?; // Also std::io::Error
+        let actual_local_addr = endpoint.local_addr().map_err(TransportError::Io)?; // Also std::io::Error
 
         info!(
             "QUIC server endpoint created, listening on {}",

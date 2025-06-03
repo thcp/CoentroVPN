@@ -219,22 +219,49 @@ impl TunnelManager {
             .get_tunnel(id)
             .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
 
-        let mut handle_guard = tunnel_handle_arc.lock().unwrap();
+        // Initial check for state and to take the connection
+        let taken_connection = {
+            let mut handle_guard = tunnel_handle_arc.lock().unwrap();
+            if handle_guard.state != TunnelState::Connected {
+                // If not connected, release lock and return error
+                return Err(TunnelError::InvalidState(format!(
+                    "Tunnel {} is not connected (state: {:?})",
+                    id, handle_guard.state
+                )));
+            }
+            // Take the connection out of the handle, releasing the lock implicitly afterwards
+            handle_guard.connection.take()
+        };
 
-        if handle_guard.state != TunnelState::Connected {
-            return Err(TunnelError::InvalidState(format!(
-                "Tunnel {} is not connected (state: {:?})",
-                id, handle_guard.state
-            )));
-        }
+        if let Some(mut conn_box) = taken_connection {
+            // The MutexGuard is dropped, so the lock is released.
+            // Now, we can safely .await on the connection operation.
+            let send_result = conn_box.send_data(&data).await;
 
-        if let Some(conn) = handle_guard.connection.as_mut() {
-            conn.send_data(&data)
-                .await
-                .map_err(TunnelError::Transport)?;
-            handle_guard.stats.record_bytes_sent(data.len());
-            Ok(())
+            // Re-acquire the lock to put the connection back and update stats
+            let mut handle_guard = tunnel_handle_arc.lock().unwrap();
+
+            // Put the connection back into the handle.
+            // It's important that `handle_guard.connection` is an Option type.
+            handle_guard.connection = Some(conn_box);
+
+            match send_result {
+                Ok(_) => {
+                    // If send was successful, update stats, but only if still connected.
+                    // The state could have changed during the .await
+                    if handle_guard.state == TunnelState::Connected {
+                        handle_guard.stats.record_bytes_sent(data.len());
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    // If send failed, map to TunnelError::Transport
+                    Err(TunnelError::Transport(e))
+                }
+            }
         } else {
+            // Connection was None after state check, implies an issue or tunnel was modified.
+            // This path is taken if `handle_guard.connection.take()` returned None.
             Err(TunnelError::NotConnected(id.to_string()))
         }
     }

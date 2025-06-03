@@ -11,7 +11,6 @@ pub struct WebTransportConnectionStub {
     // WebTransport typically uses URLs, not direct SocketAddrs for peer,
     // but SocketAddr for local might be available.
     // For a stub, we'll keep it simple.
-    peer_desc: String, // Description of the peer (e.g., URL)
     local_addr: Option<SocketAddr>,
 }
 
@@ -34,7 +33,7 @@ impl TraitConnection for WebTransportConnectionStub {
         // For a stub, we might return a loopback address or error.
         "127.0.0.1:0"
             .parse()
-            .map_err(|e| TransportError::AddrParse(e))
+            .map_err(TransportError::AddrParse)
     }
 
     fn local_addr(&self) -> Result<SocketAddr, TransportError> {

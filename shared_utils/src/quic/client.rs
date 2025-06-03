@@ -190,7 +190,7 @@ impl ClientTransport for QuicClient {
     ) -> Result<Box<dyn TraitConnection>, TransportError> {
         let server_addr: SocketAddr = server_address_str
             .parse()
-            .map_err(|e| TransportError::AddrParse(e))?;
+            .map_err(TransportError::AddrParse)?;
 
         info!("Connecting to QUIC server at {}", server_addr);
 
