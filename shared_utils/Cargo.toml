@@ -42,6 +42,18 @@ tracing-appender = "0.2.3"
 [dev-dependencies]
 # Testing
 tempfile = "3.8.1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[lib]
+bench = false # Or true, depending on whether you want to run benchmarks for the library itself
+
+[[bench]]
+name = "framing_benchmark"
+harness = false
+
+[[bench]]
+name = "aes_gcm_benchmark"
+harness = false
 
 [[example]]
 name = "config_example"
@@ -58,3 +70,7 @@ path = "examples/quic_example.rs"
 [[example]]
 name = "e2e_test"
 path = "examples/e2e_test.rs"
+
+[[example]]
+name = "stress_test"
+path = "examples/stress_test.rs"
