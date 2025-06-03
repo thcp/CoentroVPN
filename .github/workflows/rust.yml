@@ -50,7 +50,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --all-targets --all-features -- -D warning
+          args: --all-targets --all-features -- -D warnings
 
       - name: Build Rust workspace
         uses: actions-rs/cargo@v1
