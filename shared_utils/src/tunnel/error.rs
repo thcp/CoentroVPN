@@ -3,7 +3,7 @@
 use std::io;
 use thiserror::Error;
 
-use crate::quic::TransportError;
+use crate::transport::TransportError; // Changed from crate::quic::TransportError
 
 /// Result type for tunnel operations.
 pub type TunnelResult<T> = Result<T, TunnelError>;
@@ -15,8 +15,8 @@ pub enum TunnelError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// QUIC transport error
-    #[error("QUIC transport error: {0}")]
+    /// Transport layer error
+    #[error("Transport error: {0}")]
     Transport(#[from] TransportError),
 
     /// Configuration error
@@ -54,6 +54,10 @@ pub enum TunnelError {
     /// Invalid state
     #[error("Invalid state: {0}")]
     InvalidState(String),
+
+    /// Tunnel not connected
+    #[error("Tunnel not connected: {0}")]
+    NotConnected(String),
 
     /// Timeout
     #[error("Operation timed out: {0}")]

@@ -66,7 +66,7 @@ async fn test_config_to_tunnel_e2e() {
     // Get the bound address
     let bound_addr = {
         let handle = server_tunnel.lock().unwrap();
-        handle.remote_addr
+        handle.peer_or_listen_addr // Changed from remote_addr
     };
     
     println!("Server bound to {}", bound_addr);
@@ -125,7 +125,7 @@ async fn test_direct_tunnel_bootstrapping() {
     let mut server_handle = server_bootstrapper.bootstrap(server_config).await.unwrap();
     
     // Get the actual bound address
-    let bound_addr = server_handle.remote_addr;
+    let bound_addr = server_handle.peer_or_listen_addr; // Changed from remote_addr
     println!("Server bound to {}", bound_addr);
     
     // Create client bootstrapper
@@ -147,12 +147,12 @@ async fn test_direct_tunnel_bootstrapping() {
     );
     
     // Clean up
-    if let Some(conn) = client_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = client_handle.connection.take() {
+        conn_box.close().await.expect("Client connection close failed in e2e_tests");
     }
     
-    if let Some(conn) = server_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = server_handle.connection.take() {
+        conn_box.close().await.expect("Server connection close failed in e2e_tests");
     }
 }
 
@@ -178,7 +178,7 @@ async fn test_tunnel_manager_lifecycle() {
     // Get the bound address
     let bound_addr = {
         let handle = server_tunnel.lock().unwrap();
-        handle.remote_addr
+        handle.peer_or_listen_addr // Changed from remote_addr
     };
     
     // Create a client tunnel

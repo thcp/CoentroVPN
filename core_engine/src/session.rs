@@ -311,7 +311,7 @@ impl Session {
 
         // Now send the data with a new lock
         let result = {
-            let guard = match tunnel_clone.lock() {
+            let mut guard = match tunnel_clone.lock() { // Added mut
                 Ok(guard) => guard,
                 Err(e) => {
                     error!(
@@ -322,7 +322,7 @@ impl Session {
                     return Err(SessionError::Other("Failed to lock tunnel".to_string()));
                 }
             };
-            guard.send(data).await
+            guard.send_app_data(data).await // Changed to send_app_data
         };
 
         // Handle the result
@@ -418,7 +418,7 @@ impl Session {
                     return Err(SessionError::Other("Failed to lock tunnel".to_string()));
                 }
             };
-            guard.receive().await
+            guard.recv_app_data().await // Changed to recv_app_data
         };
 
         // Handle the result

@@ -90,7 +90,7 @@ async fn test_tunnel_e2e() -> TunnelResult<()> {
     let mut server_handle = server_bootstrapper.bootstrap(server_config).await?;
     
     // Get the actual bound address
-    let bound_addr = server_handle.remote_addr;
+    let bound_addr = server_handle.peer_or_listen_addr; // Changed from remote_addr
     println!("Server bound to {}", bound_addr);
     
     // Wait a moment for the server to start
@@ -123,12 +123,12 @@ async fn test_tunnel_e2e() -> TunnelResult<()> {
     assert!(server_handle.rx.capacity() > 0);
     
     // Clean up
-    if let Some(conn) = client_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = client_handle.connection.take() {
+        conn_box.close().await?;
     }
     
-    if let Some(conn) = server_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = server_handle.connection.take() {
+        conn_box.close().await?;
     }
     
     Ok(())

@@ -15,7 +15,9 @@ use std::time::Duration;
 use shared_utils::config::{Config, ConfigManager, Role};
 use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::proto::framing::{Frame, FrameDecoder, FrameEncoder};
-use shared_utils::quic::{QuicClient, QuicServer, QuicTransport, TransportMessage};
+// Updated imports:
+use shared_utils::quic::{QuicClient, QuicServer};
+use shared_utils::transport::{ClientTransport, ServerTransport, Listener as TraitListener}; // Removed unused Connection as TraitConnection & TransportError
 use shared_utils::tunnel::{
     ClientBootstrapper, ServerBootstrapper, TunnelBootstrapper, TunnelConfig, TunnelManager,
     TunnelState,
@@ -99,7 +101,7 @@ async fn test_config_to_tunnel_e2e() {
     // Get the bound address
     let bound_addr = {
         let handle = server_tunnel.lock().unwrap();
-        handle.remote_addr
+        handle.peer_or_listen_addr // Changed from remote_addr
     };
     
     println!("Server bound to {}", bound_addr);
@@ -144,7 +146,7 @@ async fn test_direct_tunnel_bootstrapping() {
     let mut server_handle = server_bootstrapper.bootstrap(server_config).await.unwrap();
     
     // Get the actual bound address
-    let bound_addr = server_handle.remote_addr;
+    let bound_addr = server_handle.peer_or_listen_addr; // Changed from remote_addr
     println!("Server bound to {}", bound_addr);
     
     // Create client bootstrapper
@@ -163,12 +165,12 @@ async fn test_direct_tunnel_bootstrapping() {
     assert_eq!(client_handle.state, TunnelState::Connected);
     
     // Clean up
-    if let Some(conn) = client_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = client_handle.connection.take() {
+        conn_box.close().await.expect("Client connection close failed");
     }
     
-    if let Some(conn) = server_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = server_handle.connection.take() {
+        conn_box.close().await.expect("Server connection close failed");
     }
 }
 
@@ -194,7 +196,7 @@ async fn test_tunnel_manager_lifecycle() {
     // Get the bound address
     let bound_addr = {
         let handle = server_tunnel.lock().unwrap();
-        handle.remote_addr
+        handle.peer_or_listen_addr // Changed from remote_addr
     };
     
     // Create a client tunnel
@@ -383,7 +385,7 @@ async fn test_multiple_concurrent_client_sessions() {
     let server_bootstrapper = ServerBootstrapper::new();
     let server_config = TunnelConfig::new_server(server_addr).with_psk(key.to_vec());
     let mut server_handle = server_bootstrapper.bootstrap(server_config).await.unwrap();
-    let bound_addr = server_handle.remote_addr;
+    let bound_addr = server_handle.peer_or_listen_addr; // Changed from remote_addr
     
     println!("Server bound to {}", bound_addr);
     
@@ -425,8 +427,8 @@ async fn test_multiple_concurrent_client_sessions() {
                 println!("Client {} connection verified", i);
                 
                 // Clean up client connection
-                if let Some(conn) = handle.connection.take() {
-                    conn.close(0u32.into(), b"Test completed");
+                if let Some(conn_box) = handle.connection.take() {
+                    conn_box.close().await.expect("Client connection close failed during concurrent test");
                 }
                 client_handles.push(handle);
             }
@@ -449,8 +451,8 @@ async fn test_multiple_concurrent_client_sessions() {
     assert!(successful_connections > 0, "At least one client should connect successfully");
     
     // Clean up server
-    if let Some(conn) = server_handle.connection.take() {
-        conn.close(0u32.into(), b"Test completed");
+    if let Some(conn_box) = server_handle.connection.take() {
+        conn_box.close().await.expect("Server connection close failed during concurrent test");
     }
     
     println!("Multiple concurrent client sessions test completed successfully");
@@ -516,52 +518,47 @@ async fn run_large_message_server(
 ) -> anyhow::Result<()> {
     println!("[SERVER] Starting large message server...");
     
-    let server = QuicServer::new(addr, key)?;
-    let actual_addr = server.local_addr();
+    let quic_server = QuicServer::new(addr, key)?;
+    let mut listener = quic_server.listen(&addr.to_string()).await?;
+    let actual_addr = listener.local_addr()?;
     println!("[SERVER] Server bound to {}", actual_addr);
     
-    // Send the actual bound address back to the test
     if actual_addr_tx.send(actual_addr).is_err() {
         return Err(anyhow::anyhow!("Failed to send actual server address back to test"));
     }
     
-    let mut rx = server.start().await?;
-    
     println!("[SERVER] Server started, waiting for large messages...");
+    let mut conn = listener.accept().await?; // Accept one connection for this test
+    println!("[SERVER] Accepted connection from {}", conn.peer_addr()?);
     
     let mut total_bytes_received = 0;
     
-    while let Some(message) = rx.recv().await {
-        match message {
-            TransportMessage::Data(data) => {
+    loop {
+        match conn.recv_data().await {
+            Ok(Some(data)) => {
                 total_bytes_received += data.len();
                 println!("[SERVER] Received {} bytes (total: {})", data.len(), total_bytes_received);
                 
-                // Verify the data pattern
                 if !data.is_empty() && data[0] == 0xAB {
                     println!("[SERVER] Data pattern verified");
                 }
                 
-                // If we've received a large message, we're done
                 if total_bytes_received >= LARGE_MESSAGE_SIZE {
                     println!("[SERVER] Large message fully received!");
                     break;
                 }
             }
-            TransportMessage::StreamClosed => {
-                println!("[SERVER] Stream closed");
-            }
-            TransportMessage::ConnectionClosed => {
-                println!("[SERVER] Connection closed");
+            Ok(None) => {
+                println!("[SERVER] Stream/Connection closed by client");
                 break;
             }
-            TransportMessage::Error(e) => {
-                println!("[SERVER] Error: {}", e);
-                break;
+            Err(e) => {
+                println!("[SERVER] Error receiving data: {}", e);
+                return Err(e.into());
             }
         }
     }
-    
+    conn.close().await?;
     Ok(())
 }
 
@@ -570,18 +567,15 @@ async fn run_large_message_client(server_addr: SocketAddr, key: &[u8], message: 
     println!("[CLIENT] Starting large message client...");
     
     let client = QuicClient::new(key)?;
-    let connection = client.connect_to_server(server_addr).await?;
+    let mut connection = client.connect(&server_addr.to_string()).await?;
     
     println!("[CLIENT] Connected, sending large message of {} bytes", message.len());
     
-    // Send the large message
-    client.send(connection.clone(), message).await?;
+    connection.send_data(&message).await?;
     
     println!("[CLIENT] Large message sent successfully");
     
-    // Close the connection
-    client.close(connection).await;
-    
+    connection.close().await?;
     Ok(())
 }
 
@@ -593,24 +587,24 @@ async fn run_encrypted_quic_server(
 ) -> anyhow::Result<()> {
     println!("[SERVER] Starting encrypted QUIC server...");
     
-    let server = QuicServer::new(addr, key)?;
-    let actual_addr = server.local_addr();
+    let quic_server = QuicServer::new(addr, key)?;
+    let mut listener = quic_server.listen(&addr.to_string()).await?;
+    let actual_addr = listener.local_addr()?;
     println!("[SERVER] Server bound to {}", actual_addr);
 
-    // Send the actual bound address back to the test
     if actual_addr_tx.send(actual_addr).is_err() {
         return Err(anyhow::anyhow!("Failed to send actual server address back to test"));
     }
     
-    let mut rx = server.start().await?;
-    
     println!("[SERVER] Server started, waiting for encrypted messages...");
+    let mut conn = listener.accept().await?;
+    println!("[SERVER] Accepted connection from {}", conn.peer_addr()?);
     
     let mut message_count = 0;
     
-    while let Some(message) = rx.recv().await {
-        match message {
-            TransportMessage::Data(data) => {
+    loop {
+        match conn.recv_data().await {
+            Ok(Some(data)) => {
                 message_count += 1;
                 match String::from_utf8(data.clone()) {
                     Ok(text) => {
@@ -620,26 +614,21 @@ async fn run_encrypted_quic_server(
                         println!("[SERVER] Received binary data: {} bytes", data.len());
                     }
                 }
-                
-                // Stop after receiving a few messages
                 if message_count >= 3 {
                     break;
                 }
             }
-            TransportMessage::StreamClosed => {
-                println!("[SERVER] Stream closed");
-            }
-            TransportMessage::ConnectionClosed => {
-                println!("[SERVER] Connection closed");
+            Ok(None) => {
+                println!("[SERVER] Stream/Connection closed by client");
                 break;
             }
-            TransportMessage::Error(e) => {
-                println!("[SERVER] Error: {}", e);
-                break;
+            Err(e) => {
+                println!("[SERVER] Error receiving data: {}", e);
+                return Err(e.into());
             }
         }
     }
-    
+    conn.close().await?;
     Ok(())
 }
 
@@ -648,23 +637,18 @@ async fn run_encrypted_quic_client(server_addr: SocketAddr, key: &[u8], messages
     println!("[CLIENT] Starting encrypted QUIC client...");
     
     let client = QuicClient::new(key)?;
-    let connection = client.connect_to_server(server_addr).await?;
+    let mut connection = client.connect(&server_addr.to_string()).await?;
     
     println!("[CLIENT] Connected, sending {} messages", messages.len());
     
-    // Send each message
-    for (i, message) in messages.iter().enumerate() {
-        println!("[CLIENT] Sending message {}: \"{}\"", i + 1, message);
-        client.send(connection.clone(), message.as_bytes().to_vec()).await?;
-        
-        // Small delay between messages
+    for (i, message_str) in messages.iter().enumerate() {
+        println!("[CLIENT] Sending message {}: \"{}\"", i + 1, message_str);
+        connection.send_data(message_str.as_bytes()).await?;
         sleep(Duration::from_millis(100)).await;
     }
     
     println!("[CLIENT] All messages sent successfully");
     
-    // Close the connection
-    client.close(connection).await;
-    
+    connection.close().await?;
     Ok(())
 }

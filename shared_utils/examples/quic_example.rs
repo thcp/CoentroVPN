@@ -10,7 +10,9 @@
 
 use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::logging;
-use shared_utils::quic::{QuicClient, QuicServer, QuicTransport, TransportMessage};
+use shared_utils::quic::{QuicClient, QuicServer};
+// Import new transport traits
+use shared_utils::transport::{ClientTransport, ServerTransport, Listener as TraitListener}; // Removed unused Connection as TraitConnection
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tokio::time;
@@ -35,50 +37,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let encryption_key = AesGcmCipher::generate_key();
     info!("Generated encryption key for testing");
 
-    // Start server
+    // Create server
     let server = QuicServer::new(server_addr, &encryption_key)?;
-    let mut server_receiver = server.start().await?;
+    let mut listener = server.listen(&server_addr.to_string()).await?;
+    info!("Server listening on {}", listener.local_addr()?);
 
-    // Spawn a task to handle server messages
+    // Spawn a task to handle server connection and messages
     tokio::spawn(async move {
-        while let Some(message) = server_receiver.recv().await {
-            match message {
-                TransportMessage::Data(data) => {
-                    let message = String::from_utf8_lossy(&data);
-                    info!("Server received: {}", message);
+        match listener.accept().await {
+            Ok(mut conn) => {
+                info!("Server accepted connection from: {}", conn.peer_addr().unwrap_or(server_addr));
+                loop {
+                    match conn.recv_data().await {
+                        Ok(Some(data)) => {
+                            let message_text = String::from_utf8_lossy(&data);
+                            info!("Server received: {}", message_text);
+                            // Echo back
+                            let echo_response = format!("Server echoes: {}", message_text);
+                            if let Err(e) = conn.send_data(echo_response.as_bytes()).await {
+                                info!("Server: Error sending echo: {}", e);
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            info!("Server: Connection closed by client");
+                            break;
+                        }
+                        Err(e) => {
+                            info!("Server error receiving data: {}", e);
+                            break;
+                        }
+                    }
                 }
-                TransportMessage::StreamClosed => {
-                    info!("Server: Stream closed");
+                if let Err(e) = conn.close().await {
+                    info!("Server: Error closing connection: {}", e);
                 }
-                TransportMessage::ConnectionClosed => {
-                    info!("Server: Connection closed");
-                }
-                TransportMessage::Error(e) => {
-                    info!("Server error: {}", e);
-                }
+            }
+            Err(e) => {
+                info!("Server failed to accept connection: {}", e);
             }
         }
     });
 
-    // Wait for server to start
-    time::sleep(Duration::from_millis(100)).await;
+    // Wait for server to be ready to accept
+    time::sleep(Duration::from_millis(200)).await;
 
     // Create client
-    // Using the same key as the server for testing
     let client = QuicClient::new(&encryption_key)?;
 
     // Connect to server
-    let connection = client.connect_to_server(server_addr).await?;
+    let mut client_conn = client.connect(&server_addr.to_string()).await?;
+    info!("Client connected to server: {}", client_conn.peer_addr()?);
 
-    // Send a message using the QuicTransport::send method which handles encryption
-    let message = b"Hello from QUIC client!".to_vec();
-    client.send(connection.clone(), message).await?;
+    // Send a message
+    let client_message = "Hello from QUIC client!";
+    info!("Client sending: {}", client_message);
+    client_conn.send_data(client_message.as_bytes()).await?;
 
-    // Wait for a moment to allow the message to be processed
-    time::sleep(Duration::from_secs(1)).await;
+    // Receive echo
+    match client_conn.recv_data().await {
+        Ok(Some(data)) => {
+            info!("Client received echo: {}", String::from_utf8_lossy(&data));
+        }
+        Ok(None) => {
+            info!("Client: Connection closed by server while waiting for echo.");
+        }
+        Err(e) => {
+            info!("Client: Error receiving echo: {}", e);
+        }
+    }
 
-    // Close the connection
-    client.close(connection).await;
+    // Wait for a moment
+    time::sleep(Duration::from_millis(100)).await;
+
+    // Close the client connection
+    client_conn.close().await?;
+    info!("Client connection closed.");
 
     info!("QUIC example completed successfully");
 

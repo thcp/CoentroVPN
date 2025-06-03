@@ -40,8 +40,10 @@ pub enum TunnelRole {
 pub enum TunnelState {
     /// Tunnel is initializing
     Initializing,
-    /// Tunnel is connecting
+    /// Tunnel is connecting (client) or listening (server)
     Connecting,
+    /// Server is listening for incoming connections
+    Listening,
     /// Tunnel is connected and ready
     Connected,
     /// Tunnel is disconnecting
@@ -119,6 +121,12 @@ impl TunnelStats {
     /// Set the tunnel state.
     pub fn set_state(&mut self, state: TunnelState) {
         self.state = state;
+        self.update_last_active();
+    }
+
+    /// Update the remote address.
+    pub fn update_remote_addr(&mut self, remote_addr: SocketAddr) {
+        self.remote_addr = remote_addr;
         self.update_last_active();
     }
 }

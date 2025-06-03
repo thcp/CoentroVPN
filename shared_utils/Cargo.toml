@@ -19,6 +19,7 @@ futures = "0.3.28"
 
 # Error handling
 thiserror = "2.0.12"
+async-trait = "0.1.77" # For async traits
 
 # Configuration
 toml = "0.8.8"
@@ -38,6 +39,9 @@ dirs = "5.0.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"
+
+# URL parsing
+url = "2.5.0"
 
 [dev-dependencies]
 # Testing
@@ -66,10 +70,6 @@ path = "examples/framing_test.rs"
 [[example]]
 name = "quic_example"
 path = "examples/quic_example.rs"
-
-[[example]]
-name = "e2e_test"
-path = "examples/e2e_test.rs"
 
 [[example]]
 name = "stress_test"

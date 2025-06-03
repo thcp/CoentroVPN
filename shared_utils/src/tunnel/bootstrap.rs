@@ -8,7 +8,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 use crate::crypto::aes_gcm::AesGcmCipher;
-use crate::quic::{QuicClient, QuicServer, QuicTransport, TransportMessage};
+// Updated imports for the new transport traits
+use crate::transport::{
+    ClientTransport, Connection as TraitConnection, Listener as TraitListener, ServerTransport,
+    TransportError as NewTransportError, // Alias to avoid conflict if old one was used locally
+};
+use crate::quic::{QuicClient, QuicServer}; // These are now concrete types implementing the traits
 use crate::tunnel::config::TunnelConfig;
 use crate::tunnel::error::{TunnelError, TunnelResult};
 use crate::tunnel::types::{TunnelId, TunnelRole, TunnelState, TunnelStats};
@@ -21,7 +26,7 @@ pub trait TunnelBootstrapper {
 }
 
 /// Handle to a bootstrapped tunnel.
-#[derive(Debug)]
+// #[derive(Debug)] // Manual Debug impl needed due to Box<dyn TraitConnection>
 pub struct TunnelHandle {
     /// Unique identifier for the tunnel
     pub id: TunnelId,
@@ -29,43 +34,60 @@ pub struct TunnelHandle {
     /// Current state of the tunnel
     pub state: TunnelState,
     
-    /// Remote endpoint address
-    pub remote_addr: SocketAddr,
+    /// Remote endpoint address (for client) or local listening address (for server before accept)
+    pub peer_or_listen_addr: SocketAddr,
     
-    /// QUIC connection (if connected)
-    pub connection: Option<quinn::Connection>,
+    /// Active connection, implementing the transport::Connection trait
+    pub connection: Option<Box<dyn TraitConnection + Send + Sync>>, // Make it Send + Sync
     
-    /// Channel for sending data to the tunnel
+    /// Channel for sending application data to the tunnel
     pub tx: mpsc::Sender<Vec<u8>>,
     
-    /// Channel for receiving data from the tunnel
+    /// Channel for receiving application data from the tunnel
     pub rx: mpsc::Receiver<Vec<u8>>,
     
-    /// Channel for receiving transport messages
-    pub transport_rx: Option<mpsc::Receiver<TransportMessage>>,
+    // transport_rx is removed as recv_data is now a direct async call on the Connection trait
     
     /// Tunnel statistics
     pub stats: TunnelStats,
+}
+
+impl std::fmt::Debug for TunnelHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let connection_status = if self.connection.is_some() {
+            "Some(Connection)"
+        } else {
+            "None"
+        };
+        f.debug_struct("TunnelHandle")
+            .field("id", &self.id)
+            .field("state", &self.state)
+            .field("peer_or_listen_addr", &self.peer_or_listen_addr)
+            .field("connection", &connection_status)
+            .field("tx", &"mpsc::Sender") // Placeholder for non-Debug type
+            .field("rx", &"mpsc::Receiver") // Placeholder for non-Debug type
+            .field("stats", &self.stats)
+            .finish()
+    }
 }
 
 impl TunnelHandle {
     /// Create a new tunnel handle.
     fn new(
         id: TunnelId,
-        remote_addr: SocketAddr,
+        peer_or_listen_addr: SocketAddr,
         tx: mpsc::Sender<Vec<u8>>,
         rx: mpsc::Receiver<Vec<u8>>,
     ) -> Self {
-        let stats = TunnelStats::new(remote_addr);
+        let stats = TunnelStats::new(peer_or_listen_addr);
         
         TunnelHandle {
             id,
             state: TunnelState::Initializing,
-            remote_addr,
+            peer_or_listen_addr,
             connection: None,
             tx,
             rx,
-            transport_rx: None,
             stats,
         }
     }
@@ -76,14 +98,14 @@ impl TunnelHandle {
         self.stats.set_state(state);
     }
     
-    /// Set the QUIC connection.
-    pub fn set_connection(&mut self, connection: quinn::Connection) {
+    /// Set the active connection.
+    pub fn set_connection(&mut self, connection: Box<dyn TraitConnection + Send + Sync>) {
+        // Update peer_or_listen_addr to the actual peer address from the connection if possible
+        if let Ok(peer_addr) = connection.peer_addr() {
+            self.peer_or_listen_addr = peer_addr;
+            self.stats.update_remote_addr(peer_addr); // Update stats too
+        }
         self.connection = Some(connection);
-    }
-    
-    /// Set the transport receiver.
-    pub fn set_transport_rx(&mut self, rx: mpsc::Receiver<TransportMessage>) {
-        self.transport_rx = Some(rx);
     }
 }
 
@@ -106,83 +128,54 @@ impl ClientBootstrapper {
 
 impl TunnelBootstrapper for ClientBootstrapper {
     async fn bootstrap(&self, config: TunnelConfig) -> TunnelResult<TunnelHandle> {
-        // Validate role
         if config.role != TunnelRole::Client {
-            return Err(TunnelError::Config(
-                "ClientBootstrapper requires client role".to_string(),
-            ));
+            return Err(TunnelError::Config("ClientBootstrapper requires client role".to_string()));
         }
         
-        // Get remote address
-        let remote_addr = config.remote_addr.ok_or_else(|| {
+        let remote_addr_str = config.remote_addr.ok_or_else(|| {
             TunnelError::Config("Client tunnel requires remote_addr".to_string())
-        })?;
+        })?.to_string(); // connect expects &str
         
-        // Generate a unique tunnel ID
+        let remote_addr_socket = remote_addr_str.parse::<SocketAddr>()
+            .map_err(|e| TunnelError::Config(format!("Invalid remote_addr: {}", e)))?;
+
         let id = TunnelId::from(format!("client-{}", uuid::Uuid::new_v4()));
+        info!(tunnel_id = %id, remote_addr = %remote_addr_str, "Bootstrapping client tunnel");
         
-        info!(tunnel_id = %id, remote_addr = %remote_addr, "Bootstrapping client tunnel");
-        
-        // Create channels for data
         let (tx, rx) = mpsc::channel(100);
+        let mut handle = TunnelHandle::new(id.clone(), remote_addr_socket, tx, rx);
         
-        // Create tunnel handle
-        let mut handle = TunnelHandle::new(id.clone(), remote_addr, tx, rx);
-        
-        // Initialize encryption
-        let key = if let Some(psk) = &config.psk {
-            psk.clone()
-        } else {
-            // In a real implementation, we would use TLS credentials
-            // For now, just generate a random key
+        let key = config.psk.clone().unwrap_or_else(|| {
             let key_array = AesGcmCipher::generate_key();
-            debug!(tunnel_id = %id, "Generated random encryption key");
+            debug!(tunnel_id = %id, "Generated random encryption key for client");
             key_array.to_vec()
-        };
+        });
         
-        // Create QUIC client
-        let client = match QuicClient::new(&key) {
-            Ok(client) => client,
-            Err(e) => {
+        let quic_client = QuicClient::new(&key)
+            .map_err(|e: NewTransportError| {
                 error!(tunnel_id = %id, error = %e, "Failed to create QUIC client");
-                return Err(TunnelError::Transport(e));
-            }
-        };
+                TunnelError::Transport(e) // Assuming TunnelError::Transport can take NewTransportError
+            })?;
         
-        // Update state
         handle.set_state(TunnelState::Connecting);
+        debug!(tunnel_id = %id, remote_addr = %remote_addr_str, "Connecting to server");
         
-        // Connect to server
-        debug!(tunnel_id = %id, remote_addr = %remote_addr, "Connecting to server");
-        
-        let connection = match client.connect_to_server(remote_addr).await {
-            Ok(conn) => conn,
-            Err(e) => {
+        let connection = quic_client.connect(&remote_addr_str).await
+            .map_err(|e: NewTransportError| {
                 error!(tunnel_id = %id, error = %e, "Failed to connect to server");
                 handle.set_state(TunnelState::Failed);
-                return Err(TunnelError::Transport(e));
-            }
-        };
+                TunnelError::Transport(e)
+            })?;
         
-        // Set connection in handle
-        handle.set_connection(connection.clone());
+        // The connection object itself is now Box<dyn TraitConnection + Send + Sync>
+        // The old handle.set_connection took quinn::Connection. This needs to be updated.
+        // Let's assume set_connection is updated to take the trait object.
+        handle.set_connection(connection); // This will also update peer_or_listen_addr in handle
         
-        // Set up receiver for transport messages
-        match client.receive(connection.clone()).await {
-            Ok(transport_rx) => {
-                handle.set_transport_rx(transport_rx);
-            }
-            Err(e) => {
-                error!(tunnel_id = %id, error = %e, "Failed to set up transport receiver");
-                handle.set_state(TunnelState::Failed);
-                return Err(TunnelError::Transport(e));
-            }
-        }
+        // Removed transport_rx setup as recv_data is called directly on the connection.
         
-        // Update state
         handle.set_state(TunnelState::Connected);
-        
-        info!(tunnel_id = %id, remote_addr = %remote_addr, "Client tunnel bootstrapped successfully");
+        info!(tunnel_id = %id, remote_addr = %handle.peer_or_listen_addr, "Client tunnel bootstrapped successfully");
         
         Ok(handle)
     }
@@ -199,7 +192,6 @@ impl Default for ServerBootstrapper {
 }
 
 impl ServerBootstrapper {
-    /// Create a new server tunnel bootstrapper.
     pub fn new() -> Self {
         ServerBootstrapper
     }
@@ -207,78 +199,76 @@ impl ServerBootstrapper {
 
 impl TunnelBootstrapper for ServerBootstrapper {
     async fn bootstrap(&self, config: TunnelConfig) -> TunnelResult<TunnelHandle> {
-        // Validate role
         if config.role != TunnelRole::Server {
-            return Err(TunnelError::Config(
-                "ServerBootstrapper requires server role".to_string(),
-            ));
+            return Err(TunnelError::Config("ServerBootstrapper requires server role".to_string()));
         }
         
-        // Get bind address
         let bind_addr = config.bind_addr.ok_or_else(|| {
             TunnelError::Config("Server tunnel requires bind_addr".to_string())
         })?;
         
-        // Generate a unique tunnel ID
         let id = TunnelId::from(format!("server-{}", uuid::Uuid::new_v4()));
-        
         info!(tunnel_id = %id, bind_addr = %bind_addr, "Bootstrapping server tunnel");
         
-        // Create channels for data
         let (tx, rx) = mpsc::channel(100);
-        
-        // Create tunnel handle
-        // For server, we use the bind address as the remote address initially
+        // Initially, peer_or_listen_addr is the bind address for the server.
+        // It will be updated to the client's address once a connection is accepted.
         let mut handle = TunnelHandle::new(id.clone(), bind_addr, tx, rx);
         
-        // Initialize encryption
-        let key = if let Some(psk) = &config.psk {
-            psk.clone()
-        } else {
-            // In a real implementation, we would use TLS credentials
-            // For now, just generate a random key
+        let key = config.psk.clone().unwrap_or_else(|| {
             let key_array = AesGcmCipher::generate_key();
-            debug!(tunnel_id = %id, "Generated random encryption key");
+            debug!(tunnel_id = %id, "Generated random encryption key for server");
             key_array.to_vec()
-        };
+        });
         
-        // Create QUIC server
-        let server = match QuicServer::new(bind_addr, &key) {
-            Ok(server) => server,
-            Err(e) => {
+        let quic_server = QuicServer::new(bind_addr, &key)
+            .map_err(|e: NewTransportError| {
                 error!(tunnel_id = %id, error = %e, "Failed to create QUIC server");
-                return Err(TunnelError::Transport(e));
-            }
-        };
+                TunnelError::Transport(e)
+            })?;
         
-        // Get the actual bound address (important when using port 0)
-        let actual_addr = server.local_addr();
+        handle.set_state(TunnelState::Listening); // New state for server waiting for connection
         
-        // Update the handle with the actual bound address
-        handle.remote_addr = actual_addr;
+        debug!(tunnel_id = %id, bind_addr = %bind_addr, "Server starting to listen");
         
-        // Update state
-        handle.set_state(TunnelState::Connecting);
-        
-        // Start server
-        debug!(tunnel_id = %id, bind_addr = %bind_addr, actual_addr = %actual_addr, "Starting server");
-        
-        let transport_rx = match server.start().await {
-            Ok(rx) => rx,
-            Err(e) => {
-                error!(tunnel_id = %id, error = %e, "Failed to start server");
+        // Listen for an incoming connection
+        let mut listener = quic_server.listen(&bind_addr.to_string()).await
+            .map_err(|e: NewTransportError| {
+                error!(tunnel_id = %id, error = %e, "Server failed to start listening");
                 handle.set_state(TunnelState::Failed);
-                return Err(TunnelError::Transport(e));
-            }
-        };
+                TunnelError::Transport(e)
+            })?;
+
+        let actual_listen_addr = listener.local_addr()
+            .map_err(|e: NewTransportError| {
+                 error!(tunnel_id = %id, error = %e, "Failed to get actual listen address");
+                 TunnelError::Transport(e)
+            })?;
+        info!(tunnel_id = %id, "Server listening on {}", actual_listen_addr);
+        handle.peer_or_listen_addr = actual_listen_addr; // Update with actual listening address
+        handle.stats.update_remote_addr(actual_listen_addr);
+
+
+        // Accept one connection for this tunnel handle
+        // In a real server, this might be in a loop, creating new handles per connection.
+        // For this bootstrap, we accept one and associate it with this handle.
+        info!(tunnel_id = %id, "Server waiting to accept a connection on {}", actual_listen_addr);
+        let connection = listener.accept().await
+            .map_err(|e: NewTransportError| {
+                error!(tunnel_id = %id, error = %e, "Server failed to accept connection");
+                handle.set_state(TunnelState::Failed);
+                TunnelError::Transport(e)
+            })?;
         
-        // Set transport receiver in handle
-        handle.set_transport_rx(transport_rx);
+        let peer_addr = connection.peer_addr().unwrap_or(actual_listen_addr); // Fallback, though peer_addr should be Ok
+        info!(tunnel_id = %id, "Server accepted connection from {}", peer_addr);
         
-        // Update state
+        handle.set_connection(connection); // This updates handle.peer_or_listen_addr to peer_addr
+        
+        // Removed transport_rx setup
+        
         handle.set_state(TunnelState::Connected);
-        
-        info!(tunnel_id = %id, bind_addr = %bind_addr, actual_addr = %actual_addr, "Server tunnel bootstrapped successfully");
+        info!(tunnel_id = %id, local_addr = %actual_listen_addr, peer_addr = %handle.peer_or_listen_addr, "Server tunnel bootstrapped and client connected");
         
         Ok(handle)
     }
@@ -293,7 +283,6 @@ mod tests {
     async fn test_client_bootstrapper_validation() {
         let bootstrapper = ClientBootstrapper::new();
         
-        // Test with server role (should fail)
         let config = TunnelConfig::new_server(SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             8080,
@@ -306,7 +295,7 @@ mod tests {
         if let Err(TunnelError::Config(msg)) = result {
             assert!(msg.contains("requires client role"));
         } else {
-            panic!("Expected Config error");
+            panic!("Expected Config error, got {:?}", result);
         }
     }
     
@@ -314,7 +303,6 @@ mod tests {
     async fn test_server_bootstrapper_validation() {
         let bootstrapper = ServerBootstrapper::new();
         
-        // Test with client role (should fail)
         let config = TunnelConfig::new_client(SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             8080,
@@ -327,7 +315,7 @@ mod tests {
         if let Err(TunnelError::Config(msg)) = result {
             assert!(msg.contains("requires server role"));
         } else {
-            panic!("Expected Config error");
+            panic!("Expected Config error, got {:?}", result);
         }
     }
 }

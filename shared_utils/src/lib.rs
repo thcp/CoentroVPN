@@ -9,13 +9,17 @@ pub mod crypto;
 pub mod logging;
 pub mod proto;
 pub mod quic;
+pub mod tcp; // Added
+pub mod transport;
 pub mod tunnel;
+pub mod webtransport; // Added
 
 // Re-export commonly used modules for convenience
 pub use config::{Config, ConfigManager, Role};
 pub use crypto::aes_gcm::AesGcmCipher;
 pub use proto::framing;
-pub use quic::{QuicClient, QuicServer, QuicTransport};
+// Removed QuicTransport from re-export
+pub use quic::{QuicClient, QuicServer}; 
 pub use tunnel::{
     TunnelBootstrapper, ClientBootstrapper, ServerBootstrapper,
     TunnelConfig, TunnelManager, TunnelError, TunnelResult,
