@@ -251,11 +251,17 @@ impl TunnelBootstrapper for ServerBootstrapper {
             }
         };
         
+        // Get the actual bound address (important when using port 0)
+        let actual_addr = server.local_addr();
+        
+        // Update the handle with the actual bound address
+        handle.remote_addr = actual_addr;
+        
         // Update state
         handle.set_state(TunnelState::Connecting);
         
         // Start server
-        debug!(tunnel_id = %id, bind_addr = %bind_addr, "Starting server");
+        debug!(tunnel_id = %id, bind_addr = %bind_addr, actual_addr = %actual_addr, "Starting server");
         
         let transport_rx = match server.start().await {
             Ok(rx) => rx,
@@ -272,7 +278,7 @@ impl TunnelBootstrapper for ServerBootstrapper {
         // Update state
         handle.set_state(TunnelState::Connected);
         
-        info!(tunnel_id = %id, bind_addr = %bind_addr, "Server tunnel bootstrapped successfully");
+        info!(tunnel_id = %id, bind_addr = %bind_addr, actual_addr = %actual_addr, "Server tunnel bootstrapped successfully");
         
         Ok(handle)
     }

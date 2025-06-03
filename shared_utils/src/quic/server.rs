@@ -16,6 +16,7 @@ use super::transport::{
 pub struct QuicServer {
     endpoint: Endpoint,
     cipher: Arc<AesGcmCipher>,
+    local_addr: SocketAddr,
 }
 
 impl QuicServer {
@@ -45,10 +46,18 @@ impl QuicServer {
 
         // Create endpoint
         let endpoint = Endpoint::server(server_config, bind_addr)?;
+        
+        // Get the actual bound address (important when using port 0)
+        let local_addr = endpoint.local_addr()?;
 
-        info!("QUIC server listening on {}", bind_addr);
+        info!("QUIC server listening on {}", local_addr);
 
-        Ok(Self { endpoint, cipher })
+        Ok(Self { endpoint, cipher, local_addr })
+    }
+
+    /// Get the local address the server is bound to.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 
     /// Start the server and handle incoming connections.
@@ -140,86 +149,60 @@ impl QuicServer {
         tx: mpsc::Sender<TransportMessage>,
         cipher: Arc<AesGcmCipher>, // Pass cipher
     ) -> TransportResult<()> {
+        let mut received_buffer = Vec::new();
+        let mut eof_received = false;
+
+        // Read all chunks from the stream until it's closed by the client
         loop {
             match recv.read_chunk(8192, false).await {
                 Ok(Some(chunk)) => {
                     debug!("Received {} encrypted bytes from client", chunk.bytes.len());
-
-                    match cipher.decrypt(&chunk.bytes) {
-                        Ok(decrypted_data) => {
-                            debug!("Decrypted to {} bytes", decrypted_data.len());
-                            // Forward the decrypted data to the channel
-                            if let Err(e) = tx
-                                .send(TransportMessage::Data(decrypted_data.clone()))
-                                .await
-                            {
-                                // Clone data if used again
-                                error!("Failed to send data to channel: {}", e);
-                                break;
-                            }
-
-                            // Only try to echo back if the client requested a response
-                            // In a real implementation, you might check a flag in the protocol
-                            // or have a specific message type that requires a response
-                            if false {
-                                // Disabled echo for now to avoid errors when client closes stream
-                                debug!(
-                                    "Encrypting {} bytes before echoing to client",
-                                    decrypted_data.len()
-                                );
-                                match cipher.encrypt(&decrypted_data) {
-                                    Ok(encrypted_response) => {
-                                        debug!(
-                                            "Encrypted to {} bytes for echoing",
-                                            encrypted_response.len()
-                                        );
-                                        // Try to write, but don't fail the whole stream if it doesn't work
-                                        if let Err(e) = send.write_all(&encrypted_response).await {
-                                            debug!(
-                                                "Could not echo back to client (likely stream closed): {}",
-                                                e
-                                            );
-                                            // Don't return error here, just log and continue
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to encrypt response for client: {}", e);
-                                        // Log the error but don't fail the whole stream
-                                        // Just continue processing other messages
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to decrypt data from client: {}", e);
-                            let _ = tx
-                                .send(TransportMessage::Error(TransportError::Other(format!(
-                                    "Server decryption failed: {}",
-                                    e
-                                ))))
-                                .await;
-                            // If decryption fails, we probably shouldn't try to send anything back on this stream.
-                            // The error is sent via the channel, and we break the loop.
-                            break;
-                        }
-                    }
+                    received_buffer.extend_from_slice(&chunk.bytes);
                 }
                 Ok(None) => {
-                    info!("Stream closed by client");
-                    let _ = tx.send(TransportMessage::StreamClosed).await;
-                    break;
+                    info!("Stream closed by client (EOF)");
+                    eof_received = true;
+                    break; // Finished reading all data from this stream
                 }
                 Err(e) => {
                     error!("Error reading from stream: {}", e);
-                    // Clone the error before moving it
                     let err_clone = TransportError::from(e.clone());
                     let _ = tx.send(TransportMessage::Error(e.into())).await;
-                    return Err(err_clone);
+                    return Err(err_clone); // Propagate read error
                 }
             }
         }
 
-        // Try to finish the stream, but don't fail if it's already closed
+        if !received_buffer.is_empty() {
+            debug!("Total encrypted bytes received: {}", received_buffer.len());
+            match cipher.decrypt(&received_buffer) {
+                Ok(decrypted_data) => {
+                    debug!("Decrypted to {} bytes", decrypted_data.len());
+                    if let Err(e) = tx.send(TransportMessage::Data(decrypted_data)).await {
+                        error!("Failed to send decrypted data to channel: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to decrypt data from client: {}", e);
+                    let _ = tx
+                        .send(TransportMessage::Error(TransportError::Other(format!(
+                            "Server decryption failed: {}",
+                            e
+                        ))))
+                        .await;
+                }
+            }
+        } else if eof_received {
+            // Stream was closed without sending any data, or after sending data that was processed.
+            // This is normal if the client just opens and closes a stream.
+            info!("Stream closed by client without sending new data in this cycle.");
+        }
+        
+        if eof_received {
+             let _ = tx.send(TransportMessage::StreamClosed).await;
+        }
+
+        // Try to finish the sending side of the stream, but don't fail if it's already closed
         match send.finish().await {
             Ok(_) => debug!("Stream finished successfully"),
             Err(e) => {

@@ -232,13 +232,8 @@ impl Config {
         // Validate role-specific requirements
         match self.role {
             Role::Server => {
-                // Server must have a port configured
-                if self.network.port == 0 {
-                    return Err(ConfigError::InvalidValue {
-                        key: "network.port".to_string(),
-                        message: "Server must have a valid port".to_string(),
-                    });
-                }
+                // Port 0 is allowed (means bind to any available port)
+                // No validation needed for port
 
                 // Server should have a virtual IP range
                 if self.server.virtual_ip_range.is_none() {

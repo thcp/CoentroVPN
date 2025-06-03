@@ -223,7 +223,12 @@ impl TunnelConfig {
 
         // Set security parameters
         if let Some(psk) = &config.security.psk {
-            tunnel_config.psk = Some(psk.as_bytes().to_vec());
+            // Derive a 32-byte key from the PSK string using SHA-256
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(psk.as_bytes());
+            let key = hasher.finalize().to_vec();
+            tunnel_config.psk = Some(key);
         }
 
         tunnel_config.cert_path = config.security.cert_path.clone();
