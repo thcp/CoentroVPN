@@ -1,10 +1,10 @@
 mod session;
 mod tunnel;
 
+use clap::Parser;
 use std::path::Path;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
-use clap::Parser;
 
 use shared_utils::config::ConfigManager;
 use shared_utils::tunnel::TunnelManager;
