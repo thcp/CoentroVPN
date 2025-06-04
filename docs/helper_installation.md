@@ -14,6 +14,12 @@ sudo ./scripts/install_helper_macos.sh
 
 This method installs the helper daemon as a launchd service, which will automatically start at boot and restart if it crashes.
 
+You can specify a custom configuration file:
+
+```bash
+sudo ./scripts/install_helper_macos.sh -c /path/to/your/config.toml
+```
+
 ### Method 2: Direct Run (Recommended for Development)
 
 ```bash
@@ -22,20 +28,43 @@ sudo ./scripts/install_helper_macos_direct.sh
 
 This method installs the helper daemon and runs it directly in the background. It will not automatically restart if it crashes or if the system is rebooted.
 
+You can specify a custom configuration file:
+
+```bash
+sudo ./scripts/install_helper_macos_direct.sh -c /path/to/your/config.toml
+```
+
 ## Troubleshooting
 
 ### Socket Permission Issues
 
-If you encounter permission issues when connecting to the helper daemon, it may be due to the socket file permissions. The helper daemon creates a Unix domain socket at `/var/run/coentrovpn/helper.sock` for IPC communication.
+If you encounter permission issues when connecting to the helper daemon, it may be due to the socket file permissions or authentication. The helper daemon creates a Unix domain socket at `/var/run/coentrovpn/helper.sock` for IPC communication.
 
 By default, the socket directory and socket file have the following permissions:
-- Socket directory: `drwxrwxrwx` (777)
-- Socket file: `srwxrwxrwx` (777)
+- Socket directory: `drwxr-xr-x` (755)
+- Socket file: `srw-rw----` (660)
 
-These permissive permissions are necessary for non-root users to connect to the socket. If you're still experiencing permission issues, you can check the permissions with:
+The helper daemon now uses UID/GID verification for authentication. By default, it allows:
+- The root user (UID 0)
+- The user who installed the helper daemon (using SUDO_UID/SUDO_GID environment variables)
+
+You can configure additional allowed UIDs in the `config.toml` file:
+
+```toml
+[helper]
+allowed_uids = [501, 1000]  # Example: Allow UIDs 501 and 1000
+```
+
+If you're experiencing permission issues, you can check the permissions and ownership with:
 
 ```bash
 ls -la /var/run/coentrovpn/
+```
+
+The socket file has 660 permissions (rw-rw----) by default, which means only root and members of the daemon group can access it. For development, you may need to make it world-writable:
+
+```bash
+sudo chmod 666 /var/run/coentrovpn/helper.sock
 ```
 
 ### Launchd Service Issues

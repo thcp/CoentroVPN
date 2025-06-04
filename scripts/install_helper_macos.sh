@@ -27,6 +27,7 @@ fi
 # Parse command line arguments
 UNINSTALL=false
 DEBUG=false
+CONFIG_FILE="$(pwd)/config.toml"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -38,9 +39,13 @@ while [[ $# -gt 0 ]]; do
       DEBUG=true
       shift
       ;;
+    -c|--config)
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
     *)
       echo -e "${RED}Unknown option: $1${NC}"
-      echo "Usage: $0 [--uninstall] [--debug]"
+      echo "Usage: $0 [--uninstall] [--debug] [-c|--config CONFIG_FILE]"
       exit 1
       ;;
   esac
@@ -98,7 +103,7 @@ fi
 # Create the socket directory
 echo "Creating socket directory: ${SOCKET_DIR}"
 mkdir -p "${SOCKET_DIR}"
-chmod 777 "${SOCKET_DIR}"  # Make it world-writable for testing
+chmod 755 "${SOCKET_DIR}"  # rwxr-xr-x - Executable by all, but only writable by owner
 
 # Install the helper daemon
 echo "Installing helper daemon to ${INSTALL_DIR}"
@@ -107,6 +112,7 @@ chmod 755 "${INSTALL_DIR}/${HELPER_NAME}"
 
 # Create the launchd plist file
 echo "Creating launchd plist file"
+echo "Using configuration file: ${CONFIG_FILE}"
 cat > "${LAUNCHD_DIR}/${PLIST_NAME}" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -120,6 +126,8 @@ cat > "${LAUNCHD_DIR}/${PLIST_NAME}" << EOF
         <string>--socket-path</string>
         <string>${SOCKET_DIR}/helper.sock</string>
         <string>--foreground</string>
+        <string>--config</string>
+        <string>${CONFIG_FILE}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -131,6 +139,8 @@ cat > "${LAUNCHD_DIR}/${PLIST_NAME}" << EOF
     <string>/var/log/coentrovpn-helper.log</string>
     <key>ProcessType</key>
     <string>Interactive</string>
+    <key>WorkingDirectory</key>
+    <string>/</string>
 </dict>
 </plist>
 EOF

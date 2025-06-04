@@ -3,7 +3,7 @@
 //! This module handles IPC connections and requests from the client.
 
 use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails};
-use coentro_ipc::transport::{UnixSocketListener, UnixSocketConnection, IpcResult};
+use coentro_ipc::transport::{UnixSocketListener, UnixSocketConnection, AuthConfig, IpcResult};
 use log::{info, error, debug};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -45,9 +45,28 @@ impl IpcHandler {
         &self,
         socket_path: P,
         mut shutdown_rx: oneshot::Receiver<()>,
+        allowed_uids: Vec<u32>,
     ) -> anyhow::Result<()> {
-        // Create the Unix Domain Socket listener
-        let listener = UnixSocketListener::bind(&socket_path).await
+        // Create an authentication configuration
+        let mut auth_config = AuthConfig::new()
+            .allow_root(true); // Allow root by default
+        
+        // If SUDO_UID is set, allow the original user
+        if let Ok(uid) = std::env::var("SUDO_UID") {
+            if let Ok(uid) = uid.parse::<u32>() {
+                debug!("Allowing UID {} (from SUDO_UID)", uid);
+                auth_config = auth_config.allow_uid(uid);
+            }
+        }
+        
+        // Allow UIDs from configuration
+        for uid in allowed_uids {
+            debug!("Allowing UID {} (from configuration)", uid);
+            auth_config = auth_config.allow_uid(uid);
+        }
+        
+        // Create the Unix Domain Socket listener with authentication
+        let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config).await
             .map_err(|e| anyhow::anyhow!("Failed to bind to socket: {}", e))?;
 
         info!("IPC handler listening on {}", socket_path.as_ref().display());
@@ -64,9 +83,9 @@ impl IpcHandler {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok(connection) => {
-                            // For Sprint 1, we're using a simple client ID based on the process ID
-                            let client_id = std::process::id();
-                            info!("Accepted connection from client ID={}", client_id);
+                            // Get the client ID from the peer credentials
+                            let client_id = connection.peer_uid();
+                            info!("Accepted connection from client ID={} (UID={})", client_id, client_id);
 
                             // Create a new client state
                             let client_state = ClientState {
@@ -154,7 +173,9 @@ impl IpcHandler {
         active_clients: Arc<Mutex<HashMap<u32, ClientState>>>,
         version: String,
     ) -> anyhow::Result<()> {
-        debug!("Handling client ID={}", client_id);
+        let peer_uid = connection.peer_uid();
+        let peer_gid = connection.peer_gid();
+        debug!("Handling client ID={} (UID={}, GID={})", client_id, peer_uid, peer_gid);
 
         loop {
             // Receive a request from the client

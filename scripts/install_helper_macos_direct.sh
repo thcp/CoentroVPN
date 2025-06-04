@@ -26,6 +26,7 @@ fi
 # Parse command line arguments
 UNINSTALL=false
 DEBUG=false
+CONFIG_FILE="$(pwd)/config.toml"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -37,9 +38,13 @@ while [[ $# -gt 0 ]]; do
       DEBUG=true
       shift
       ;;
+    -c|--config)
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
     *)
       echo -e "${RED}Unknown option: $1${NC}"
-      echo "Usage: $0 [--uninstall] [--debug]"
+      echo "Usage: $0 [--uninstall] [--debug] [-c|--config CONFIG_FILE]"
       exit 1
       ;;
   esac
@@ -94,7 +99,7 @@ fi
 # Create the socket directory
 echo "Creating socket directory: ${SOCKET_DIR}"
 mkdir -p "${SOCKET_DIR}"
-chmod 777 "${SOCKET_DIR}"  # Make it world-writable for testing
+chmod 755 "${SOCKET_DIR}"  # rwxr-xr-x - Executable by all, but only writable by owner
 
 # Install the helper daemon
 echo "Installing helper daemon to ${INSTALL_DIR}"
@@ -104,11 +109,16 @@ chmod 755 "${INSTALL_DIR}/${HELPER_NAME}"
 # Kill any existing helper daemon
 echo "Stopping any existing helper daemon..."
 pkill -f "${INSTALL_DIR}/${HELPER_NAME}" || true
+sleep 2
+# Make sure all instances are killed
+pkill -f "${INSTALL_DIR}/${HELPER_NAME}" || true
 
 # Run the helper daemon directly in the background
 echo "Starting helper daemon directly..."
-nohup "${INSTALL_DIR}/${HELPER_NAME}" --socket-path "${SOCKET_DIR}/helper.sock" --foreground > "${LOG_FILE}" 2>&1 &
-HELPER_PID=$!
+echo "Using configuration file: ${CONFIG_FILE}"
+sudo bash -c "cd / && ${INSTALL_DIR}/${HELPER_NAME} --socket-path ${SOCKET_DIR}/helper.sock --foreground --config ${CONFIG_FILE} > ${LOG_FILE} 2>&1 &"
+sleep 2
+HELPER_PID=$(pgrep -f "${INSTALL_DIR}/${HELPER_NAME}")
 
 # Wait a moment for the daemon to start
 sleep 2

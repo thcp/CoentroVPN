@@ -159,6 +159,14 @@ pub struct ServerConfig {
     pub routes: Vec<String>,
 }
 
+/// Helper daemon configuration settings.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct HelperConfig {
+    /// List of user IDs allowed to connect to the helper daemon
+    #[serde(default)]
+    pub allowed_uids: Vec<u32>,
+}
+
 /// Main configuration structure for CoentroVPN.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -182,6 +190,10 @@ pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
 
+    /// Helper daemon configuration
+    #[serde(default)]
+    pub helper: HelperConfig,
+
     /// Log level (default: "info")
     #[serde(default = "default_log_level")]
     pub log_level: String,
@@ -199,6 +211,7 @@ impl Default for Config {
             security: SecurityConfig::default(),
             client: ClientConfig::default(),
             server: ServerConfig::default(),
+            helper: HelperConfig::default(),
             log_level: default_log_level(),
         }
     }
