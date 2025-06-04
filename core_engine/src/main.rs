@@ -1,10 +1,15 @@
 mod session;
 mod tunnel;
 
-use tracing::{debug, info};
+use std::path::Path;
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
-fn main() {
+use shared_utils::config::ConfigManager;
+use shared_utils::tunnel::TunnelManager;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing subscriber
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -16,18 +21,40 @@ fn main() {
         .init();
 
     info!("Starting CoentroVPN core engine");
-    debug!("Initializing with default configuration");
+    debug!("Initializing with configuration");
 
-    // In the future, we would load configuration here
-    // let config_manager = match ConfigManager::load_default() {
-    //     Ok(manager) => manager,
-    //     Err(err) => {
-    //         error!("Failed to load configuration: {}", err);
-    //         return;
-    //     }
-    // };
+    // Load configuration
+    let config_path = Path::new("config.toml");
+    let config_manager = match ConfigManager::load(config_path) {
+        Ok(manager) => manager,
+        Err(err) => {
+            error!("Failed to load configuration: {}", err);
+            return Err(format!("Configuration error: {}", err).into());
+        }
+    };
 
-    // TODO: Implement core engine functionality
+    let config = config_manager.config();
+    info!("Configuration loaded successfully");
+    debug!("Role: {:?}", config.role);
 
-    info!("CoentroVPN core engine started");
+    // Create tunnel manager
+    let tunnel_manager = TunnelManager::new();
+
+    // Create tunnel based on configuration
+    match tunnel_manager.create_tunnel_from_config(config).await {
+        Ok(tunnel_id) => {
+            info!("Tunnel created successfully with ID: {}", tunnel_id);
+
+            // Keep the application running
+            tokio::signal::ctrl_c().await?;
+            info!("Received shutdown signal");
+        }
+        Err(err) => {
+            error!("Failed to create tunnel: {}", err);
+            return Err(format!("Tunnel creation failed: {}", err).into());
+        }
+    }
+
+    info!("CoentroVPN core engine shutting down");
+    Ok(())
 }

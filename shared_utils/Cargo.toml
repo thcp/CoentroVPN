@@ -19,6 +19,7 @@ futures = "0.3.28"
 
 # Error handling
 thiserror = "2.0.12"
+async-trait = "0.1.77" # For async traits
 
 # Configuration
 toml = "0.8.8"
@@ -27,7 +28,9 @@ serde = { version = "1.0.193", features = ["derive"] }
 # Cryptography
 aes-gcm = "0.10.3" # For AES-GCM encryption
 rand = "0.8.5"    # For nonce generation
+sha2 = "0.10.8"   # For key derivation
 anyhow = "1.0.79"  # For flexible error handling
+uuid = { version = "1.4.1", features = ["v4"] } # For unique identifiers
 
 # Filesystem
 dirs = "5.0.1"
@@ -37,9 +40,24 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"
 
+# URL parsing
+url = "2.5.0"
+
 [dev-dependencies]
 # Testing
 tempfile = "3.8.1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[lib]
+bench = false # Or true, depending on whether you want to run benchmarks for the library itself
+
+[[bench]]
+name = "framing_benchmark"
+harness = false
+
+[[bench]]
+name = "aes_gcm_benchmark"
+harness = false
 
 [[example]]
 name = "config_example"
@@ -54,5 +72,5 @@ name = "quic_example"
 path = "examples/quic_example.rs"
 
 [[example]]
-name = "e2e_test"
-path = "examples/e2e_test.rs"
+name = "stress_test"
+path = "examples/stress_test.rs"

@@ -232,13 +232,8 @@ impl Config {
         // Validate role-specific requirements
         match self.role {
             Role::Server => {
-                // Server must have a port configured
-                if self.network.port == 0 {
-                    return Err(ConfigError::InvalidValue {
-                        key: "network.port".to_string(),
-                        message: "Server must have a valid port".to_string(),
-                    });
-                }
+                // Port 0 is allowed (means bind to any available port)
+                // No validation needed for port
 
                 // Server should have a virtual IP range
                 if self.server.virtual_ip_range.is_none() {
@@ -416,12 +411,23 @@ mod tests {
 
     #[test]
     fn test_save_config() {
-        let mut config = Config::default();
-        config.role = Role::Server;
-        config.log_level = "debug".to_string();
-        config.network.port = 9090;
-        config.security.psk = Some("test-key".to_string());
-        config.server.virtual_ip_range = Some("10.0.0.0/24".to_string());
+        let config = Config {
+            role: Role::Server,
+            log_level: "debug".to_string(),
+            network: NetworkConfig {
+                port: 9090,
+                ..Default::default()
+            },
+            security: SecurityConfig {
+                psk: Some("test-key".to_string()),
+                ..Default::default()
+            },
+            server: ServerConfig {
+                virtual_ip_range: Some("10.0.0.0/24".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let file = NamedTempFile::new().unwrap();
         config.save(file.path()).unwrap();
@@ -440,38 +446,70 @@ mod tests {
 
     #[test]
     fn test_validation() {
-        // Test server validation
-        let mut config = Config::default();
-        config.role = Role::Server;
-
-        // Missing virtual_ip_range
+        // Test server validation - step 1: missing virtual_ip_range
+        let config = Config {
+            role: Role::Server,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.server.virtual_ip_range = Some("10.0.0.0/24".to_string());
-
-        // Missing security credentials
+        // Test server validation - step 2: missing security credentials
+        let config = Config {
+            role: Role::Server,
+            server: ServerConfig {
+                virtual_ip_range: Some("10.0.0.0/24".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.security.psk = Some("test-key".to_string());
-
-        // Should be valid now
+        // Test server validation - step 3: valid configuration
+        let config = Config {
+            role: Role::Server,
+            server: ServerConfig {
+                virtual_ip_range: Some("10.0.0.0/24".to_string()),
+                ..Default::default()
+            },
+            security: SecurityConfig {
+                psk: Some("test-key".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
 
-        // Test client validation
-        let mut config = Config::default();
-        config.role = Role::Client;
-
-        // Missing server_address
+        // Test client validation - step 1: missing server_address
+        let config = Config {
+            role: Role::Client,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.client.server_address = Some("vpn.example.com".to_string());
-
-        // Missing security credentials
+        // Test client validation - step 2: missing security credentials
+        let config = Config {
+            role: Role::Client,
+            client: ClientConfig {
+                server_address: Some("vpn.example.com".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        config.security.psk = Some("test-key".to_string());
-
-        // Should be valid now
+        // Test client validation - step 3: valid configuration
+        let config = Config {
+            role: Role::Client,
+            client: ClientConfig {
+                server_address: Some("vpn.example.com".to_string()),
+                ..Default::default()
+            },
+            security: SecurityConfig {
+                psk: Some("test-key".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 

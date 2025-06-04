@@ -9,4 +9,3 @@ mod transport;
 
 pub use client::QuicClient;
 pub use server::QuicServer;
-pub use transport::{QuicTransport, TransportError, TransportMessage};

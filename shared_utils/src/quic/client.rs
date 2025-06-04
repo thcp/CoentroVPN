@@ -1,221 +1,258 @@
-//! QUIC client implementation for CoentroVPN.
-
 use crate::crypto::aes_gcm::AesGcmCipher;
-use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
+use crate::transport::{ClientTransport, Connection as TraitConnection, TransportError};
+use async_trait::async_trait;
+use quinn::{ClientConfig, Endpoint, RecvStream, SendStream};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-use super::transport::{
-    QuicTransport, TransportError, TransportMessage, TransportResult, configure_client_tls,
-};
+// Note: The old `super::transport::TransportError` and related items might need to be removed
+// or reconciled if they are still used elsewhere. For now, we focus on the new traits.
+// We will also need to update `configure_client_tls` if it's still used.
+// For simplicity, I'll assume `configure_client_tls` is available from `crate::quic::transport` for now.
+use crate::quic::transport::configure_client_tls;
+
+/// Represents an active client-side QUIC connection (a single bidirectional stream).
+pub struct QuicClientConnection {
+    conn_handle: Arc<quinn::Connection>, // To get local/peer addresses and close the main connection
+    local_s_addr: SocketAddr,            // Store local socket address
+    send_stream: SendStream,
+    recv_stream: RecvStream,
+    cipher: Arc<AesGcmCipher>,
+}
+
+#[async_trait]
+impl TraitConnection for QuicClientConnection {
+    async fn send_data(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        debug!(
+            "Encrypting {} bytes before sending via QUIC client connection",
+            data.len()
+        );
+        let encrypted_data = self.cipher.encrypt(data).map_err(|e| {
+            TransportError::Generic(format!("Client-side encryption failed: {}", e))
+        })?;
+        debug!("Encrypted to {} bytes", encrypted_data.len());
+
+        self.send_stream
+            .write_all(&encrypted_data)
+            .await
+            .map_err(|e| TransportError::Send(format!("Failed to write to QUIC stream: {}", e)))?;
+        Ok(())
+    }
+
+    async fn recv_data(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        // QUIC streams don't have a fixed max size for read_chunk like TCP,
+        // but we need a buffer. Let's use a reasonable size.
+        // `read_chunk` reads *up to* the buffer size.
+        // For VPN packets, they might be around MTU size (e.g., 1500 bytes).
+        // A larger buffer (e.g., 8192) can reduce the number of reads for larger messages.
+        match self.recv_stream.read_chunk(8192, false).await {
+            Ok(Some(chunk)) => {
+                debug!(
+                    "Received {} encrypted bytes from server via QUIC client connection",
+                    chunk.bytes.len()
+                );
+                let decrypted_data = self.cipher.decrypt(&chunk.bytes).map_err(|e| {
+                    TransportError::Generic(format!("Client-side decryption failed: {}", e))
+                })?;
+                debug!("Decrypted to {} bytes", decrypted_data.len());
+                Ok(Some(decrypted_data))
+            }
+            Ok(None) => {
+                info!("QUIC stream closed by server (client connection)");
+                Ok(None) // Stream gracefully closed
+            }
+            Err(quinn::ReadError::ConnectionLost(e)) => {
+                error!(
+                    "QUIC connection lost while reading from stream (client): {}",
+                    e
+                );
+                Err(TransportError::Connection(format!(
+                    "Connection lost: {}",
+                    e
+                )))
+            }
+            Err(quinn::ReadError::Reset(reason)) => {
+                info!(
+                    "QUIC stream reset by server (client connection), reason code: {}",
+                    reason.into_inner()
+                );
+                // Treat as graceful closure for now, or map to a specific error if needed
+                Ok(None)
+            }
+            Err(quinn::ReadError::UnknownStream) => {
+                error!("QUIC stream unknown (client connection)");
+                Err(TransportError::Connection("Stream unknown".to_string()))
+            }
+            Err(e) => {
+                error!("Error reading from QUIC stream (client connection): {}", e);
+                Err(TransportError::Receive(format!(
+                    "Failed to read from QUIC stream: {}",
+                    e
+                )))
+            }
+        }
+    }
+
+    fn peer_addr(&self) -> Result<SocketAddr, TransportError> {
+        Ok(self.conn_handle.remote_address())
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr, TransportError> {
+        Ok(self.local_s_addr)
+    }
+
+    async fn close(mut self: Box<Self>) -> Result<(), TransportError> {
+        info!("Closing QUIC client connection stream");
+        // Finish the send stream to signal no more data will be sent.
+        if let Err(e) = self.send_stream.finish().await {
+            // Log error but proceed, as we still want to try stopping the recv stream
+            // and potentially closing the connection.
+            error!("Error finishing QUIC send stream: {}", e);
+        }
+
+        // Optionally, stop the receive stream if we want to signal we're not expecting more data.
+        // This sends a STOP_SENDING frame.
+        // self.recv_stream.stop(0u32.into()).unwrap_or_else(|e| {
+        //     error!("Error stopping QUIC recv stream: {}", e);
+        // });
+
+        // The `Connection` trait's close is for the logical connection.
+        // Here, it means this specific stream. If this is the primary/only stream,
+        // we might consider closing the entire quinn::Connection.
+        // For now, closing the stream is sufficient.
+        // If the `QuicClientConnection` is the sole user of `conn_handle`,
+        // and `conn_handle` is an Arc, dropping this struct might not close the QUIC connection
+        // if other Arcs exist.
+        // A more explicit close of the underlying quinn::Connection might be needed
+        // if this `close` is meant to terminate the entire QUIC session.
+        // Let's assume for now it's about this specific data channel.
+        // The `quinn::Connection` itself can be closed using `conn_handle.close()`.
+        // For now, we'll just ensure the stream is properly finished.
+        // If the user wants to close the entire QUIC session, they might need a different method
+        // on the `QuicClient` itself, or this `close` implies closing the underlying `quinn::Connection`.
+        // Let's make it close the underlying connection for now.
+        info!(local = ?self.local_s_addr, peer = ?self.conn_handle.remote_address(), "QuicClientConnection: close - Closing underlying quinn::Connection.");
+        self.conn_handle
+            .close(0u32.into(), b"Client initiated close");
+        info!(local = ?self.local_s_addr, peer = ?self.conn_handle.remote_address(), "QuicClientConnection: close - Underlying quinn::Connection close initiated.");
+        Ok(())
+    }
+}
 
 /// QUIC client for CoentroVPN.
 pub struct QuicClient {
     endpoint: Endpoint,
     cipher: Arc<AesGcmCipher>,
+    client_config: ClientConfig, // Store client_config to be used in connect
 }
 
 impl QuicClient {
     /// Create a new QUIC client.
-    pub fn new(key: &[u8]) -> TransportResult<Self> {
-        // Configure client TLS
-        let client_tls = configure_client_tls()?;
+    /// The `key` is used for AES-GCM encryption/decryption of the payload.
+    pub fn new(key: &[u8]) -> Result<Self, TransportError> {
+        let client_tls_config =
+            configure_client_tls().map_err(|e| TransportError::Configuration(e.to_string()))?;
 
-        // Initialize cipher
-        let cipher =
-            Arc::new(AesGcmCipher::new(key).map_err(|e| {
-                TransportError::Other(format!("Failed to initialize cipher: {}", e))
-            })?);
+        let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| {
+            TransportError::Configuration(format!("Failed to initialize cipher: {}", e))
+        })?);
 
-        // Configure QUIC client
-        let mut client_config = ClientConfig::new(client_tls);
+        let mut client_config = ClientConfig::new(client_tls_config);
         let mut transport_config = quinn::TransportConfig::default();
 
-        // Set transport parameters
-        transport_config
-            .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()));
+        let idle_timeout = std::time::Duration::from_secs(30).try_into().map_err(|_| {
+            TransportError::Configuration("Invalid timeout duration for QUIC".into())
+        })?;
+        transport_config.max_idle_timeout(Some(idle_timeout));
         transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
 
         client_config.transport_config(Arc::new(transport_config));
 
-        // Create endpoint
-        let mut endpoint = Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
-        endpoint.set_default_client_config(client_config);
+        let endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()) // Binds to any available local port
+            .map_err(|e| {
+                TransportError::Configuration(format!("Failed to create QUIC endpoint: {}", e))
+            })?;
+        // Note: `set_default_client_config` is not needed if we pass config to `connect_with`
 
-        Ok(Self { endpoint, cipher })
-    }
-
-    /// Connect to a server and establish a new connection.
-    pub async fn connect_to_server(&self, server_addr: SocketAddr) -> TransportResult<Connection> {
-        info!("Connecting to QUIC server at {}", server_addr);
-
-        let connecting = self
-            .endpoint
-            .connect(server_addr, "localhost")
-            .map_err(|e| TransportError::Other(format!("Failed to connect: {}", e)))?;
-
-        let new_conn = connecting.await.map_err(TransportError::Connection)?;
-
-        info!("Connected to QUIC server at {}", server_addr);
-
-        Ok(new_conn)
-    }
-
-    /// Handle a bidirectional stream.
-    pub async fn handle_bidirectional_stream(
-        // No longer &self as cipher is passed directly
-        _send: SendStream,
-        mut recv: RecvStream, // Made mut recv here
-        tx: mpsc::Sender<TransportMessage>,
-        cipher: Arc<AesGcmCipher>,
-    ) {
-        // let mut recv = recv; // recv is already mut
-
-        loop {
-            match recv.read_chunk(8192, false).await {
-                Ok(Some(chunk)) => {
-                    debug!("Received {} encrypted bytes from server", chunk.bytes.len());
-                    match cipher.decrypt(&chunk.bytes) {
-                        Ok(decrypted_data) => {
-                            debug!("Decrypted to {} bytes", decrypted_data.len());
-                            if let Err(e) = tx.send(TransportMessage::Data(decrypted_data)).await {
-                                error!("Failed to send data to channel: {}", e);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to decrypt data from server: {}", e);
-                            // Optionally send an error message through tx or handle appropriately
-                            // For now, we break the loop on decryption failure.
-                            let _ = tx
-                                .send(TransportMessage::Error(TransportError::Other(format!(
-                                    "Decryption failed: {}",
-                                    e
-                                ))))
-                                .await;
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    info!("Stream closed by server");
-                    let _ = tx.send(TransportMessage::StreamClosed).await;
-                    break;
-                }
-                Err(e) => {
-                    error!("Error reading from stream: {}", e);
-                    let _ = tx.send(TransportMessage::Error(e.into())).await;
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Open a bidirectional stream on a connection.
-    pub async fn open_bidirectional_stream(
-        &self,
-        connection: &Connection,
-    ) -> TransportResult<(SendStream, RecvStream)> {
-        let stream = connection.open_bi().await.map_err(|e| {
-            TransportError::Other(format!("Failed to open bidirectional stream: {}", e))
-        })?;
-
-        info!("Opened bidirectional stream");
-
-        Ok(stream)
-    }
-
-    /// Process incoming bidirectional streams.
-    async fn process_incoming_streams(
-        connection: Connection,
-        tx: mpsc::Sender<TransportMessage>,
-        cipher: Arc<AesGcmCipher>, // Pass cipher
-    ) {
-        // Use a manual approach to handle incoming streams
-        tokio::spawn(async move {
-            loop {
-                // Accept a bidirectional stream directly
-                match connection.accept_bi().await {
-                    Ok((send, recv)) => {
-                        let tx_clone = tx.clone();
-                        let cipher_clone = cipher.clone(); // Clone Arc for the new task
-                        tokio::spawn(async move {
-                            // Call handle_bidirectional_stream directly, passing the cipher
-                            QuicClient::handle_bidirectional_stream(
-                                send,
-                                recv,
-                                tx_clone,
-                                cipher_clone,
-                            )
-                            .await;
-                        });
-                    }
-                    Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                        info!("Connection closed by application");
-                        let _ = tx.send(TransportMessage::ConnectionClosed).await;
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("Error accepting bidirectional stream: {}", e);
-                        if let Err(e) = tx.send(TransportMessage::Error(e.into())).await {
-                            error!("Failed to send error to channel: {}", e);
-                        }
-                    }
-                }
-            }
-        });
+        Ok(Self {
+            endpoint,
+            cipher,
+            client_config,
+        })
     }
 }
 
-impl QuicTransport for QuicClient {
-    fn connect(&self, _addr: SocketAddr) -> TransportResult<Connection> {
-        // This is a synchronous function in the trait, but we need to perform async operations.
-        // We'll return an error suggesting to use the async connect_to_server method instead.
-        Err(TransportError::Other(
-            "Use connect_to_server async method instead".to_string(),
-        ))
-    }
+#[async_trait]
+impl ClientTransport for QuicClient {
+    async fn connect(
+        &self,
+        server_address_str: &str,
+    ) -> Result<Box<dyn TraitConnection>, TransportError> {
+        let server_addr: SocketAddr = server_address_str
+            .parse()
+            .map_err(TransportError::AddrParse)?;
 
-    async fn send(&self, connection: Connection, data: Vec<u8>) -> TransportResult<()> {
-        debug!("Encrypting {} bytes before sending", data.len());
-        let encrypted_data = self
-            .cipher
-            .encrypt(&data)
-            .map_err(|e| TransportError::Other(format!("Client encryption failed: {}", e)))?;
-        debug!("Encrypted to {} bytes", encrypted_data.len());
+        info!(server_addr = %server_addr, "QuicClient: connect - START_AWAIT for endpoint.connect_with");
 
-        let (mut send, _) = connection.open_bi().await.map_err(|e| {
-            TransportError::Other(format!("Failed to open bidirectional stream: {}", e))
+        let connecting_result =
+            self.endpoint
+                .connect_with(self.client_config.clone(), server_addr, "localhost"); // Corrected argument order
+
+        let connecting = connecting_result.map_err(|e| {
+            error!(server_addr = %server_addr, error = %e, "QuicClient: connect - Failed to initiate QUIC connection (pre-await).");
+            TransportError::Connection(format!("Failed to initiate QUIC connection: {}", e))
         })?;
 
-        send.write_all(&encrypted_data)
-            .await
-            .map_err(TransportError::Write)?;
+        info!(server_addr = %server_addr, "QuicClient: connect - endpoint.connect_with returned, awaiting connection establishment...");
+        let new_conn_result = connecting.await;
+        info!(server_addr = %server_addr, "QuicClient: connect - END_AWAIT for endpoint.connect_with (connection establishment)");
 
-        send.finish().await.map_err(TransportError::Write)?;
+        let new_conn = new_conn_result.map_err(|e| {
+            error!(server_addr = %server_addr, error = %e, "QuicClient: connect - QUIC connection attempt failed.");
+            TransportError::Connection(format!("QUIC connection attempt failed: {}", e))
+        })?;
 
-        Ok(())
-    }
+        info!(
+            server_addr = %server_addr,
+            "QuicClient: connect - Successfully established QUIC connection."
+        );
 
-    async fn receive(
-        &self,
-        connection: Connection,
-    ) -> TransportResult<mpsc::Receiver<TransportMessage>> {
-        let (tx, rx) = mpsc::channel(100);
+        // Open a bidirectional stream for this connection
+        info!(server_addr = %server_addr, "QuicClient: connect - START_AWAIT for new_conn.open_bi");
+        let stream_result = new_conn.open_bi().await;
+        info!(server_addr = %server_addr, "QuicClient: connect - END_AWAIT for new_conn.open_bi");
+        let (send_stream, recv_stream) = stream_result.map_err(|e| {
+            error!(server_addr = %server_addr, error = %e, "QuicClient: connect - Failed to open bidirectional QUIC stream.");
+            TransportError::Connection(format!("Failed to open bidirectional QUIC stream: {}", e))
+        })?;
+        info!(server_addr = %server_addr, "QuicClient: connect - Opened bidirectional stream.");
 
-        // Pass the client's cipher to process_incoming_streams
-        tokio::spawn(Self::process_incoming_streams(
-            connection,
-            tx,
-            self.cipher.clone(),
-        ));
+        // Get the local address from the endpoint that made the connection
+        let local_socket_addr = self.endpoint.local_addr().map_err(|e| {
+            TransportError::Generic(format!("Failed to get local endpoint address: {}", e))
+        })?;
 
-        Ok(rx)
-    }
+        let quic_connection = QuicClientConnection {
+            conn_handle: Arc::new(new_conn),
+            local_s_addr: local_socket_addr,
+            send_stream,
+            recv_stream,
+            cipher: self.cipher.clone(),
+        };
 
-    async fn close(&self, connection: Connection) {
-        connection.close(0u32.into(), b"Client closed connection");
+        Ok(Box::new(quic_connection))
     }
 }
+
+// Old QuicClient methods like `connect_to_server`, `handle_bidirectional_stream`,
+// `open_bidirectional_stream`, `process_incoming_streams` and the `QuicTransport` trait
+// implementation would be removed or significantly refactored.
+// For this step, we are focusing on implementing the new `ClientTransport` trait.
+// The `mpsc` channel logic previously in `receive` and `handle_bidirectional_stream`
+// is now encapsulated within the `QuicClientConnection::recv_data` method for a single stream.
+// If multiple concurrent streams from the server to the client on the same QUIC connection
+// need to be handled and multiplexed into a single `Connection` trait object,
+// the design of `QuicClientConnection` would need to be more complex, possibly involving
+// its own internal task for multiplexing incoming streams.
+// However, the `Connection` trait seems to represent a single logical data pipe.

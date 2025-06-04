@@ -1,0 +1,71 @@
+name: Release CoentroVPN Binaries
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build_and_release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: linux-x86_64
+            archive_format: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-x86_64
+            archive_format: zip
+          - target: aarch64-apple-darwin
+            os: macos-aarch64
+            archive_format: zip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install cross-rs
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev main # Using main branch for latest features if needed
+
+      - name: Build binary (cli_client)
+        run: |
+          cross build --manifest-path cli_client/Cargo.toml --target ${{ matrix.target }} --release
+          # For macOS, cross might not be strictly necessary if building on a macOS runner,
+          # but using it for consistency. For aarch64-apple-darwin, it's very helpful.
+
+      - name: Prepare artifact name
+        id: artifact_details
+        run: |
+          BINARY_NAME="cli_client" # Adjusted to actual binary name
+          VERSION_TAG=${GITHUB_REF_NAME} # e.g., v0.1.0
+          ARTIFACT_NAME="${BINARY_NAME}-${VERSION_TAG}-${{ matrix.os }}"
+          echo "artifact_name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+          echo "binary_path=./target/${{ matrix.target }}/release/cli_client" >> $GITHUB_OUTPUT
+          # Adjusted binary_path to actual binary name
+
+      - name: Package binary
+        run: |
+          ARTIFACT_NAME="${{ steps.artifact_details.outputs.artifact_name }}"
+          BINARY_PATH="${{ steps.artifact_details.outputs.binary_path }}"
+          if [ "${{ matrix.archive_format }}" = "zip" ]; then
+            zip -j "${ARTIFACT_NAME}.zip" "${BINARY_PATH}"
+          else
+            tar -czvf "${ARTIFACT_NAME}.tar.gz" -C "$(dirname "${BINARY_PATH}")" "$(basename "${BINARY_PATH}")"
+          fi
+        shell: bash
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ${{ steps.artifact_details.outputs.artifact_name }}.${{ matrix.archive_format }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

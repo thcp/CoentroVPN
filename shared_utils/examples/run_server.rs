@@ -10,7 +10,9 @@
 
 use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::logging;
-use shared_utils::quic::{QuicServer, TransportMessage};
+use shared_utils::quic::QuicServer;
+// Import new transport traits
+use shared_utils::transport::{Listener as TraitListener, ServerTransport}; // Removed unused Connection as TraitConnection
 use std::env;
 use std::net::SocketAddr;
 use tracing::{Level, info};
@@ -39,38 +41,52 @@ async fn main() -> anyhow::Result<()> {
     let encryption_key = AesGcmCipher::generate_key();
     info!("Generated encryption key for testing");
 
-    // Create and start the server
+    // Create the server
     let server = QuicServer::new(listen_addr, &encryption_key)?;
-    let mut receiver = server.start().await?;
-
-    info!("Server started and listening for connections");
+    let mut listener = server.listen(&listen_addr.to_string()).await?;
+    let actual_listen_addr = listener.local_addr()?;
+    info!("Server started and listening on {}", actual_listen_addr);
     info!("Press Ctrl+C to stop the server");
 
-    // Process incoming messages
-    while let Some(message) = receiver.recv().await {
-        match message {
-            TransportMessage::Data(data) => {
-                // Try to convert to string if it's text data
-                match String::from_utf8(data.clone()) {
-                    Ok(text) => {
-                        info!("Received message: {}", text);
+    // Accept one connection
+    match listener.accept().await {
+        Ok(mut conn) => {
+            info!("Accepted connection from: {}", conn.peer_addr()?);
+            // Process incoming data on this connection
+            loop {
+                match conn.recv_data().await {
+                    Ok(Some(data)) => {
+                        match String::from_utf8(data.clone()) {
+                            Ok(text) => {
+                                info!("Received message: {}", text);
+                                // Echo back
+                                if let Err(e) =
+                                    conn.send_data(format!("Echo: {}", text).as_bytes()).await
+                                {
+                                    info!("Error sending echo: {}", e);
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                info!("Received binary data: {:?}", data);
+                            }
+                        }
                     }
-                    Err(_) => {
-                        info!("Received binary data: {:?}", data);
+                    Ok(None) => {
+                        info!("Connection closed by client");
+                        break;
+                    }
+                    Err(e) => {
+                        info!("Error receiving data: {}", e);
+                        break;
                     }
                 }
             }
-            TransportMessage::StreamClosed => {
-                info!("Stream closed by client");
-            }
-            TransportMessage::ConnectionClosed => {
-                info!("Connection closed");
-            }
-            TransportMessage::Error(e) => {
-                info!("Error: {}", e);
-            }
+            conn.close().await?;
+        }
+        Err(e) => {
+            info!("Failed to accept connection: {}", e);
         }
     }
-
     Ok(())
 }

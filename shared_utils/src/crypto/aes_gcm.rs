@@ -3,6 +3,7 @@ use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce}; // KeyInit is directly re-exporte
 use anyhow::Result;
 use rand::RngCore;
 use std::fmt; // For manual Debug impl
+use std::sync::atomic::{AtomicU64, Ordering}; // Added for AtomicU64
 
 const KEY_SIZE: usize = 32; // AES-256
 const NONCE_SIZE: usize = 12; // AES-GCM standard nonce size (96 bits)
@@ -11,6 +12,8 @@ const _TAG_SIZE: usize = 16; // AES-GCM standard tag size (128 bits)
 // #[derive(Debug)] // Cannot derive Debug as Aes256Gcm doesn't implement it
 pub struct AesGcmCipher {
     cipher: Aes256Gcm,
+    nonce_prefix: [u8; 4],    // Random prefix per cipher instance
+    nonce_counter: AtomicU64, // Counter for nonces
 }
 
 // Manual Debug implementation
@@ -18,6 +21,8 @@ impl fmt::Debug for AesGcmCipher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AesGcmCipher")
             .field("cipher", &"[Aes256Gcm instance]") // Placeholder for non-Debug field
+            .field("nonce_prefix", &self.nonce_prefix)
+            .field("nonce_counter", &self.nonce_counter.load(Ordering::Relaxed)) // Show current counter value
             .finish()
     }
 }
@@ -33,7 +38,15 @@ impl AesGcmCipher {
         }
         let key_array = Key::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key_array);
-        Ok(Self { cipher })
+
+        let mut nonce_prefix = [0u8; 4];
+        rand::thread_rng().fill_bytes(&mut nonce_prefix);
+
+        Ok(Self {
+            cipher,
+            nonce_prefix,
+            nonce_counter: AtomicU64::new(0),
+        })
     }
 
     pub fn generate_key() -> [u8; KEY_SIZE] {
@@ -42,14 +55,31 @@ impl AesGcmCipher {
         key
     }
 
-    fn generate_nonce() -> [u8; NONCE_SIZE] {
+    // Generates a unique nonce for this cipher instance
+    fn generate_nonce_bytes(&self) -> [u8; NONCE_SIZE] {
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        // Atomically increment the counter and get the value before incrementing
+        let count = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
+
+        // Construct nonce: 4-byte prefix | 8-byte counter (big-endian)
+        nonce_bytes[0..4].copy_from_slice(&self.nonce_prefix);
+        nonce_bytes[4..12].copy_from_slice(&count.to_be_bytes());
+
+        // Check for counter wrap-around. Extremely unlikely with u64.
+        if count == u64::MAX {
+            // This is a catastrophic event for this cipher instance.
+            // Depending on policy, one might panic, log an error, or try to re-key.
+            // For now, we'll rely on the fact that u64::MAX is astronomically large.
+            // A production system might need a more robust strategy if such longevity is expected.
+            eprintln!(
+                "CRITICAL: AES-GCM nonce counter has wrapped around! Key re-use is imminent if not re-keyed."
+            );
+        }
         nonce_bytes
     }
 
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let nonce_bytes = Self::generate_nonce();
+        let nonce_bytes = self.generate_nonce_bytes();
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = self
@@ -86,6 +116,7 @@ impl AesGcmCipher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryInto; // For try_into in tests
 
     #[test]
     fn test_encrypt_decrypt_success() {
@@ -175,5 +206,99 @@ mod tests {
             result.unwrap_err().to_string(),
             "Ciphertext is too short to contain a nonce."
         );
+    }
+
+    #[test]
+    fn test_nonce_uniqueness_for_instance() {
+        let key = AesGcmCipher::generate_key();
+        let cipher = AesGcmCipher::new(&key).unwrap();
+        let plaintext1 = b"message1";
+        let plaintext2 = b"message2";
+
+        // First encryption
+        let encrypted1 = cipher.encrypt(plaintext1).unwrap();
+        let nonce1_bytes_slice = &encrypted1[0..NONCE_SIZE];
+        let prefix1_slice = &nonce1_bytes_slice[0..4];
+        let counter1_slice = &nonce1_bytes_slice[4..NONCE_SIZE];
+        let counter1_array: [u8; 8] = counter1_slice
+            .try_into()
+            .expect("Counter slice has wrong length");
+        let counter1_val = u64::from_be_bytes(counter1_array);
+
+        // Second encryption
+        let encrypted2 = cipher.encrypt(plaintext2).unwrap();
+        let nonce2_bytes_slice = &encrypted2[0..NONCE_SIZE];
+        let prefix2_slice = &nonce2_bytes_slice[0..4];
+        let counter2_slice = &nonce2_bytes_slice[4..NONCE_SIZE];
+        let counter2_array: [u8; 8] = counter2_slice
+            .try_into()
+            .expect("Counter slice has wrong length");
+        let counter2_val = u64::from_be_bytes(counter2_array);
+
+        // Overall nonces should be different
+        assert_ne!(
+            nonce1_bytes_slice, nonce2_bytes_slice,
+            "Nonces from two consecutive encryptions on the same instance should be different"
+        );
+
+        // Prefixes should be the same for the same cipher instance
+        assert_eq!(
+            prefix1_slice, prefix2_slice,
+            "Nonce prefix should be the same for the same cipher instance"
+        );
+
+        // Counter parts should be different
+        assert_ne!(
+            counter1_slice, counter2_slice,
+            "Nonce counter part should differ"
+        );
+
+        // Specifically, counter2 should be counter1 + 1
+        assert_eq!(
+            counter2_val,
+            counter1_val + 1,
+            "Nonce counter should increment by 1. Got {} and {}",
+            counter1_val,
+            counter2_val
+        );
+
+        // Decrypt to ensure messages are still valid
+        let decrypted1 = cipher.decrypt(&encrypted1).unwrap();
+        assert_eq!(decrypted1, plaintext1);
+
+        let decrypted2 = cipher.decrypt(&encrypted2).unwrap();
+        assert_eq!(decrypted2, plaintext2);
+    }
+
+    #[test]
+    fn test_nonce_counter_increments_over_multiple_encryptions() {
+        let key = AesGcmCipher::generate_key();
+        let cipher = AesGcmCipher::new(&key).unwrap();
+        let plaintext = b"test message";
+        let num_encryptions = 5;
+        let mut last_counter_val: Option<u64> = None;
+
+        for i in 0..num_encryptions {
+            let encrypted_data = cipher.encrypt(plaintext).unwrap();
+            let nonce_bytes_slice = &encrypted_data[0..NONCE_SIZE];
+            let counter_slice = &nonce_bytes_slice[4..NONCE_SIZE];
+            let counter_array: [u8; 8] = counter_slice
+                .try_into()
+                .expect("Counter slice has wrong length");
+            let current_counter_val = u64::from_be_bytes(counter_array);
+
+            if let Some(last_val) = last_counter_val {
+                assert_eq!(
+                    current_counter_val,
+                    last_val + 1,
+                    "Counter should increment by 1 on iteration {}",
+                    i
+                );
+            } else {
+                // For the first encryption, counter should be 0 (as fetch_add returns old value)
+                assert_eq!(current_counter_val, 0, "Initial counter value should be 0");
+            }
+            last_counter_val = Some(current_counter_val);
+        }
     }
 }
