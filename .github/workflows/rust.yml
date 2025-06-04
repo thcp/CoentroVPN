@@ -18,7 +18,7 @@ jobs:
       fail-fast: true
       matrix:
         rust:
-          - stable
+          - 1.87.0
     steps:
       - uses: actions/checkout@v3
 
@@ -36,7 +36,7 @@ jobs:
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.87.0
           override: true
           components: rustfmt, clippy
 

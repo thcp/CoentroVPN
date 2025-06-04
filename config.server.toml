@@ -29,7 +29,7 @@ verify_tls = true
 # Client-specific configuration (used when role is "client")
 [client]
 # Server address to connect to
-server_address = "vpn.example.com"
+server_address = "127.0.0.1:8080"
 # Reconnect automatically on disconnect
 auto_reconnect = true
 # Reconnect interval in seconds
@@ -42,4 +42,4 @@ virtual_ip_range = "10.0.0.0/24"
 # DNS servers to push to clients
 dns_servers = ["8.8.8.8", "1.1.1.1"]
 # Routes to push to clients
-routes = ["192.168.1.0/24"]
+routes = ["192.168.1.0/24","0.0.0.0/0"]
