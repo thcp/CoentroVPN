@@ -168,21 +168,39 @@ async fn test_direct_tunnel_bootstrapping() {
     }
 }
 
-#[tokio::test]
-#[ignore]
+#[tokio::test(flavor = "multi_thread")]
+// #[ignore] // Intentionally un-ignoring for debugging
 async fn test_tunnel_manager_lifecycle() {
+    println!("test_tunnel_manager_lifecycle: START");
     // Create a tunnel manager
+    println!("test_tunnel_manager_lifecycle: Creating TunnelManager...");
     let tunnel_manager = TunnelManager::new();
+    println!("test_tunnel_manager_lifecycle: TunnelManager created.");
 
     // Generate a shared key
     let key = AesGcmCipher::generate_key();
 
     // Create a server tunnel
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081);
-    let server_tunnel_id = tunnel_manager
-        .create_server_tunnel(server_addr, Some(key.clone().to_vec()))
-        .await
-        .unwrap();
+    println!("test_tunnel_manager_lifecycle: Creating server tunnel...");
+
+    // Use tokio::time::timeout to prevent hanging indefinitely
+    let server_tunnel_id = match tokio::time::timeout(
+        std::time::Duration::from_secs(10), // 10 second timeout
+        tunnel_manager.create_server_tunnel(server_addr, Some(key.clone().to_vec())),
+    )
+    .await
+    {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            println!("test_tunnel_manager_lifecycle: TIMEOUT creating server tunnel!");
+            panic!("Timeout creating server tunnel");
+        }
+    };
+    println!(
+        "test_tunnel_manager_lifecycle: Server tunnel created with ID: {}",
+        server_tunnel_id
+    );
 
     // Get the server tunnel
     let server_tunnel = tunnel_manager.get_tunnel(&server_tunnel_id).unwrap();
@@ -194,32 +212,89 @@ async fn test_tunnel_manager_lifecycle() {
     };
 
     // Create a client tunnel
-    let client_tunnel_id = tunnel_manager
-        .create_client_tunnel(bound_addr, Some(key.clone().to_vec()))
-        .await
-        .unwrap();
+    println!(
+        "test_tunnel_manager_lifecycle: Creating client tunnel to {}...",
+        bound_addr
+    );
+
+    // Use tokio::time::timeout to prevent hanging indefinitely
+    let client_tunnel_id = match tokio::time::timeout(
+        std::time::Duration::from_secs(10), // 10 second timeout
+        tunnel_manager.create_client_tunnel(bound_addr, Some(key.clone().to_vec())),
+    )
+    .await
+    {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            println!("test_tunnel_manager_lifecycle: TIMEOUT creating client tunnel!");
+            panic!("Timeout creating client tunnel");
+        }
+    };
+    println!(
+        "test_tunnel_manager_lifecycle: Client tunnel created with ID: {}",
+        client_tunnel_id
+    );
 
     // Wait a moment for the connection to establish
+    println!("test_tunnel_manager_lifecycle: Sleeping for 100ms...");
     sleep(Duration::from_millis(100)).await;
+    println!("test_tunnel_manager_lifecycle: Sleep finished.");
 
     // Verify we have two tunnels
     assert_eq!(tunnel_manager.tunnel_count(), 2);
 
     // Close the client tunnel
-    tunnel_manager
-        .close_tunnel(&client_tunnel_id)
-        .await
-        .unwrap();
+    println!(
+        "test_tunnel_manager_lifecycle: Closing client tunnel {}...",
+        client_tunnel_id
+    );
+
+    // Use tokio::time::timeout to prevent hanging indefinitely
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10), // 10 second timeout
+        tunnel_manager.close_tunnel(&client_tunnel_id),
+    )
+    .await
+    {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            println!("test_tunnel_manager_lifecycle: TIMEOUT closing client tunnel!");
+            panic!("Timeout closing client tunnel");
+        }
+    };
+    println!(
+        "test_tunnel_manager_lifecycle: Client tunnel {} closed.",
+        client_tunnel_id
+    );
 
     // Verify we have one tunnel left
     assert_eq!(tunnel_manager.tunnel_count(), 1);
 
     // Close the server tunnel
-    tunnel_manager
-        .close_tunnel(&server_tunnel_id)
-        .await
-        .unwrap();
+    println!(
+        "test_tunnel_manager_lifecycle: Closing server tunnel {}...",
+        server_tunnel_id
+    );
+
+    // Use tokio::time::timeout to prevent hanging indefinitely
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10), // 10 second timeout
+        tunnel_manager.close_tunnel(&server_tunnel_id),
+    )
+    .await
+    {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            println!("test_tunnel_manager_lifecycle: TIMEOUT closing server tunnel!");
+            panic!("Timeout closing server tunnel");
+        }
+    };
+    println!(
+        "test_tunnel_manager_lifecycle: Server tunnel {} closed.",
+        server_tunnel_id
+    );
 
     // Verify all tunnels are closed
     assert_eq!(tunnel_manager.tunnel_count(), 0);
+    println!("test_tunnel_manager_lifecycle: END");
 }

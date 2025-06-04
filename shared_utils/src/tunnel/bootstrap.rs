@@ -43,6 +43,9 @@ pub struct TunnelHandle {
     /// Active connection, implementing the transport::Connection trait
     pub connection: Option<Box<dyn TraitConnection + Send + Sync>>, // Make it Send + Sync
 
+    /// For server tunnels, the listener that's waiting for connections
+    pub listener: Option<Box<dyn TraitListener + Send + Sync>>,
+
     /// Channel for sending application data to the tunnel
     pub tx: mpsc::Sender<Vec<u8>>,
 
@@ -61,11 +64,17 @@ impl std::fmt::Debug for TunnelHandle {
         } else {
             "None"
         };
+        let listener_status = if self.listener.is_some() {
+            "Some(Listener)"
+        } else {
+            "None"
+        };
         f.debug_struct("TunnelHandle")
             .field("id", &self.id)
             .field("state", &self.state)
             .field("peer_or_listen_addr", &self.peer_or_listen_addr)
             .field("connection", &connection_status)
+            .field("listener", &listener_status)
             .field("tx", &"mpsc::Sender") // Placeholder for non-Debug type
             .field("rx", &"mpsc::Receiver") // Placeholder for non-Debug type
             .field("stats", &self.stats)
@@ -88,6 +97,7 @@ impl TunnelHandle {
             state: TunnelState::Initializing,
             peer_or_listen_addr,
             connection: None,
+            listener: None,
             tx,
             rx,
             stats,
@@ -146,7 +156,7 @@ impl TunnelBootstrapper for ClientBootstrapper {
             .map_err(|e| TunnelError::Config(format!("Invalid remote_addr: {}", e)))?;
 
         let id = TunnelId::from(format!("client-{}", uuid::Uuid::new_v4()));
-        info!(tunnel_id = %id, remote_addr = %remote_addr_str, "Bootstrapping client tunnel");
+        info!(tunnel_id = %id, remote_addr = %remote_addr_str, "ClientBootstrapper: bootstrap - START");
 
         let (tx, rx) = mpsc::channel(100);
         let mut handle = TunnelHandle::new(id.clone(), remote_addr_socket, tx, rx);
@@ -163,17 +173,16 @@ impl TunnelBootstrapper for ClientBootstrapper {
         })?;
 
         handle.set_state(TunnelState::Connecting);
-        debug!(tunnel_id = %id, remote_addr = %remote_addr_str, "Connecting to server");
+        info!(tunnel_id = %id, remote_addr = %remote_addr_str, "ClientBootstrapper: bootstrap - Connecting to server. START_AWAIT for quic_client.connect");
 
-        let connection =
-            quic_client
-                .connect(&remote_addr_str)
-                .await
-                .map_err(|e: NewTransportError| {
-                    error!(tunnel_id = %id, error = %e, "Failed to connect to server");
-                    handle.set_state(TunnelState::Failed);
-                    TunnelError::Transport(e)
-                })?;
+        let connection_result = quic_client.connect(&remote_addr_str).await;
+        info!(tunnel_id = %id, remote_addr = %remote_addr_str, "ClientBootstrapper: bootstrap - Connecting to server. END_AWAIT for quic_client.connect");
+
+        let connection = connection_result.map_err(|e: NewTransportError| {
+            error!(tunnel_id = %id, error = %e, "Failed to connect to server");
+            handle.set_state(TunnelState::Failed);
+            TunnelError::Transport(e)
+        })?;
 
         // The connection object itself is now Box<dyn TraitConnection + Send + Sync>
         // The old handle.set_connection took quinn::Connection. This needs to be updated.
@@ -183,7 +192,7 @@ impl TunnelBootstrapper for ClientBootstrapper {
         // Removed transport_rx setup as recv_data is called directly on the connection.
 
         handle.set_state(TunnelState::Connected);
-        info!(tunnel_id = %id, remote_addr = %handle.peer_or_listen_addr, "Client tunnel bootstrapped successfully");
+        info!(tunnel_id = %id, remote_addr = %handle.peer_or_listen_addr, "ClientBootstrapper: bootstrap - Client tunnel bootstrapped successfully. END");
 
         Ok(handle)
     }
@@ -218,7 +227,10 @@ impl TunnelBootstrapper for ServerBootstrapper {
             .ok_or_else(|| TunnelError::Config("Server tunnel requires bind_addr".to_string()))?;
 
         let id = TunnelId::from(format!("server-{}", uuid::Uuid::new_v4()));
-        info!(tunnel_id = %id, bind_addr = %bind_addr, "Bootstrapping server tunnel");
+        println!(
+            "ServerBootstrapper: bootstrap - START for id {} at {}",
+            id, bind_addr
+        );
 
         let (tx, rx) = mpsc::channel(100);
         // Initially, peer_or_listen_addr is the bind address for the server.
@@ -227,57 +239,101 @@ impl TunnelBootstrapper for ServerBootstrapper {
 
         let key = config.psk.clone().unwrap_or_else(|| {
             let key_array = AesGcmCipher::generate_key();
-            debug!(tunnel_id = %id, "Generated random encryption key for server");
+            println!(
+                "ServerBootstrapper: bootstrap - Generated random encryption key for server {}",
+                id
+            );
             key_array.to_vec()
         });
 
+        println!(
+            "ServerBootstrapper: bootstrap - Creating QuicServer for {}",
+            id
+        );
         let quic_server = QuicServer::new(bind_addr, &key).map_err(|e: NewTransportError| {
-            error!(tunnel_id = %id, error = %e, "Failed to create QUIC server");
+            println!(
+                "ServerBootstrapper: bootstrap - Failed to create QUIC server for {}: {}",
+                id, e
+            );
             TunnelError::Transport(e)
         })?;
+        println!(
+            "ServerBootstrapper: bootstrap - QuicServer created for {}",
+            id
+        );
 
         handle.set_state(TunnelState::Listening); // New state for server waiting for connection
 
-        debug!(tunnel_id = %id, bind_addr = %bind_addr, "Server starting to listen");
+        println!(
+            "ServerBootstrapper: bootstrap - Server {} starting to listen at {}. START_AWAIT for quic_server.listen",
+            id, bind_addr
+        );
 
         // Listen for an incoming connection
-        let mut listener =
-            quic_server
-                .listen(&bind_addr.to_string())
-                .await
-                .map_err(|e: NewTransportError| {
-                    error!(tunnel_id = %id, error = %e, "Server failed to start listening");
-                    handle.set_state(TunnelState::Failed);
-                    TunnelError::Transport(e)
-                })?;
+        let listener_result = quic_server.listen(&bind_addr.to_string()).await;
+        println!(
+            "ServerBootstrapper: bootstrap - Server {} finished listen() call. END_AWAIT for quic_server.listen",
+            id
+        );
+        let listener = match listener_result {
+            Ok(l) => {
+                println!(
+                    "ServerBootstrapper: bootstrap - Server {} successfully created listener",
+                    id
+                );
+                l
+            }
+            Err(e) => {
+                println!(
+                    "ServerBootstrapper: bootstrap - Server {} failed to start listening: {}",
+                    id, e
+                );
+                handle.set_state(TunnelState::Failed);
+                return Err(TunnelError::Transport(e));
+            }
+        };
 
-        let actual_listen_addr = listener.local_addr().map_err(|e: NewTransportError| {
-            error!(tunnel_id = %id, error = %e, "Failed to get actual listen address");
-            TunnelError::Transport(e)
-        })?;
-        info!(tunnel_id = %id, "Server listening on {}", actual_listen_addr);
+        println!(
+            "ServerBootstrapper: bootstrap - Server {} getting local_addr",
+            id
+        );
+        let actual_listen_addr = match listener.local_addr() {
+            Ok(addr) => {
+                println!(
+                    "ServerBootstrapper: bootstrap - Server {} got local_addr: {}",
+                    id, addr
+                );
+                addr
+            }
+            Err(e) => {
+                println!(
+                    "ServerBootstrapper: bootstrap - Server {} failed to get actual listen address: {}",
+                    id, e
+                );
+                return Err(TunnelError::Transport(e));
+            }
+        };
+
+        println!(
+            "ServerBootstrapper: bootstrap - Server {} listening on {}",
+            id, actual_listen_addr
+        );
         handle.peer_or_listen_addr = actual_listen_addr; // Update with actual listening address
         handle.stats.update_remote_addr(actual_listen_addr);
 
-        // Accept one connection for this tunnel handle
-        // In a real server, this might be in a loop, creating new handles per connection.
-        // For this bootstrap, we accept one and associate it with this handle.
-        info!(tunnel_id = %id, "Server waiting to accept a connection on {}", actual_listen_addr);
-        let connection = listener.accept().await.map_err(|e: NewTransportError| {
-            error!(tunnel_id = %id, error = %e, "Server failed to accept connection");
-            handle.set_state(TunnelState::Failed);
-            TunnelError::Transport(e)
-        })?;
+        // IMPORTANT: We're not waiting for a client connection during bootstrap anymore
+        // This fixes the deadlock where the server waits for a client, but the client can't be created
+        // until the server bootstrap completes
 
-        let peer_addr = connection.peer_addr().unwrap_or(actual_listen_addr); // Fallback, though peer_addr should be Ok
-        info!(tunnel_id = %id, "Server accepted connection from {}", peer_addr);
+        // Store the listener in the handle for later use
+        handle.listener = Some(Box::new(listener));
 
-        handle.set_connection(connection); // This updates handle.peer_or_listen_addr to peer_addr
-
-        // Removed transport_rx setup
-
-        handle.set_state(TunnelState::Connected);
-        info!(tunnel_id = %id, local_addr = %actual_listen_addr, peer_addr = %handle.peer_or_listen_addr, "Server tunnel bootstrapped and client connected");
+        // Set state to Listening instead of Connected since we haven't accepted a connection yet
+        handle.set_state(TunnelState::Listening);
+        println!(
+            "ServerBootstrapper: bootstrap - Server {} tunnel bootstrapped (in Listening state). END",
+            id
+        );
 
         Ok(handle)
     }

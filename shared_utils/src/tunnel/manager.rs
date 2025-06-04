@@ -50,14 +50,18 @@ impl TunnelManager {
         remote_addr: SocketAddr,
         psk: Option<Vec<u8>>,
     ) -> TunnelResult<TunnelId> {
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), remote_addr = %remote_addr, "TunnelManager: create_client_tunnel - START");
         let mut config = TunnelConfig::new_client(remote_addr);
         if let Some(key) = psk {
             config = config.with_psk(key);
         }
 
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), remote_addr = %remote_addr, "TunnelManager: create_client_tunnel - Bootstrapping client...");
         let handle = self.client_bootstrapper.bootstrap(config).await?;
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), tunnel_id = %handle.id, "TunnelManager: create_client_tunnel - Client bootstrapped.");
         let id = handle.id.clone();
         self.add_tunnel(handle)?;
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), tunnel_id = %id, "TunnelManager: create_client_tunnel - END");
         Ok(id)
     }
 
@@ -67,14 +71,18 @@ impl TunnelManager {
         bind_addr: SocketAddr,
         psk: Option<Vec<u8>>,
     ) -> TunnelResult<TunnelId> {
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), bind_addr = %bind_addr, "TunnelManager: create_server_tunnel - START");
         let mut config = TunnelConfig::new_server(bind_addr);
         if let Some(key) = psk {
             config = config.with_psk(key);
         }
 
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), bind_addr = %bind_addr, "TunnelManager: create_server_tunnel - Bootstrapping server...");
         let handle = self.server_bootstrapper.bootstrap(config).await?;
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), tunnel_id = %handle.id, "TunnelManager: create_server_tunnel - Server bootstrapped.");
         let id = handle.id.clone();
         self.add_tunnel(handle)?;
+        info!(manager_id = ?Arc::as_ptr(&self.tunnels), tunnel_id = %id, "TunnelManager: create_server_tunnel - END");
         Ok(id)
     }
 
@@ -130,11 +138,21 @@ impl TunnelManager {
             // For now, let's try to make it work by taking the connection.
             // This implies a tunnel handle is for one connection lifecycle.
 
-            let connection_opt = {
+            let (connection_opt, is_listening) = {
                 // Removed mut
                 let mut handle_guard = handle_arc.lock().unwrap();
-                handle_guard.connection.take() // Take ownership of the connection
+                // Check if this is a server tunnel in Listening state
+                let is_listening =
+                    handle_guard.state == TunnelState::Listening && handle_guard.listener.is_some();
+                (handle_guard.connection.take(), is_listening) // Take ownership of the connection
             };
+
+            // If this is a server tunnel in Listening state, we don't want to remove it
+            // from the manager just because it doesn't have a connection yet
+            if is_listening {
+                info!(tunnel_id = %id, "Tunnel is in Listening state, keeping it in the manager");
+                return; // Exit the task without removing the tunnel
+            }
 
             if let Some(mut conn) = connection_opt {
                 loop {
@@ -286,16 +304,19 @@ impl TunnelManager {
         } // Lock released here
 
         if let Some(conn_box) = connection_to_close {
-            info!(tunnel_id = %id, "Closing taken connection for tunnel.");
-            if let Err(e) = conn_box.close().await {
+            info!(tunnel_id = %id, "TunnelManager: close_tunnel - Closing taken connection for tunnel. START_AWAIT");
+            let close_result = conn_box.close().await;
+            info!(tunnel_id = %id, "TunnelManager: close_tunnel - Closing taken connection for tunnel. END_AWAIT");
+            if let Err(e) = close_result {
                 error!(tunnel_id = %id, error = %e, "Error closing transport connection");
                 // Even if close fails, proceed with cleanup
             }
         } else {
-            info!(tunnel_id = %id, "No active connection to close or already disconnecting/disconnected.");
+            info!(tunnel_id = %id, "TunnelManager: close_tunnel - No active connection to close or already disconnecting/disconnected.");
         }
 
         // Remove the tunnel from active tracking
+        info!(tunnel_id = %id, "TunnelManager: close_tunnel - Removing tunnel from active tracking.");
         self.tunnels.lock().unwrap().remove(id);
 
         // Abort and remove the processing task

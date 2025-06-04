@@ -132,9 +132,10 @@ impl TraitConnection for QuicClientConnection {
         // If the user wants to close the entire QUIC session, they might need a different method
         // on the `QuicClient` itself, or this `close` implies closing the underlying `quinn::Connection`.
         // Let's make it close the underlying connection for now.
+        info!(local = ?self.local_s_addr, peer = ?self.conn_handle.remote_address(), "QuicClientConnection: close - Closing underlying quinn::Connection.");
         self.conn_handle
             .close(0u32.into(), b"Client initiated close");
-        info!("QUIC client connection (underlying quinn::Connection) closed.");
+        info!(local = ?self.local_s_addr, peer = ?self.conn_handle.remote_address(), "QuicClientConnection: close - Underlying quinn::Connection close initiated.");
         Ok(())
     }
 }
@@ -192,29 +193,40 @@ impl ClientTransport for QuicClient {
             .parse()
             .map_err(TransportError::AddrParse)?;
 
-        info!("Connecting to QUIC server at {}", server_addr);
+        info!(server_addr = %server_addr, "QuicClient: connect - START_AWAIT for endpoint.connect_with");
 
-        let connecting = self
-            .endpoint
-            .connect_with(self.client_config.clone(), server_addr, "localhost") // Corrected argument order
-            .map_err(|e| {
-                TransportError::Connection(format!("Failed to initiate QUIC connection: {}", e))
-            })?;
+        let connecting_result =
+            self.endpoint
+                .connect_with(self.client_config.clone(), server_addr, "localhost"); // Corrected argument order
 
-        let new_conn = connecting.await.map_err(|e| {
+        let connecting = connecting_result.map_err(|e| {
+            error!(server_addr = %server_addr, error = %e, "QuicClient: connect - Failed to initiate QUIC connection (pre-await).");
+            TransportError::Connection(format!("Failed to initiate QUIC connection: {}", e))
+        })?;
+
+        info!(server_addr = %server_addr, "QuicClient: connect - endpoint.connect_with returned, awaiting connection establishment...");
+        let new_conn_result = connecting.await;
+        info!(server_addr = %server_addr, "QuicClient: connect - END_AWAIT for endpoint.connect_with (connection establishment)");
+
+        let new_conn = new_conn_result.map_err(|e| {
+            error!(server_addr = %server_addr, error = %e, "QuicClient: connect - QUIC connection attempt failed.");
             TransportError::Connection(format!("QUIC connection attempt failed: {}", e))
         })?;
 
         info!(
-            "Successfully established QUIC connection to {}",
-            server_addr
+            server_addr = %server_addr,
+            "QuicClient: connect - Successfully established QUIC connection."
         );
 
         // Open a bidirectional stream for this connection
-        let (send_stream, recv_stream) = new_conn.open_bi().await.map_err(|e| {
+        info!(server_addr = %server_addr, "QuicClient: connect - START_AWAIT for new_conn.open_bi");
+        let stream_result = new_conn.open_bi().await;
+        info!(server_addr = %server_addr, "QuicClient: connect - END_AWAIT for new_conn.open_bi");
+        let (send_stream, recv_stream) = stream_result.map_err(|e| {
+            error!(server_addr = %server_addr, error = %e, "QuicClient: connect - Failed to open bidirectional QUIC stream.");
             TransportError::Connection(format!("Failed to open bidirectional QUIC stream: {}", e))
         })?;
-        info!("Opened bidirectional stream for QUIC client connection");
+        info!(server_addr = %server_addr, "QuicClient: connect - Opened bidirectional stream.");
 
         // Get the local address from the endpoint that made the connection
         let local_socket_addr = self.endpoint.local_addr().map_err(|e| {

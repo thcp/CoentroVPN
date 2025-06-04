@@ -109,9 +109,10 @@ impl TraitConnection for QuicServerConnection {
         // The actual QUIC connection might stay open for other streams if the design supported it,
         // or be closed by the listener if this was the only/primary interaction.
         // For consistency with client and to ensure prompt cleanup, explicitly close the underlying connection.
+        info!(local = ?self.local_s_addr, peer = ?self.conn_handle.remote_address(), "QuicServerConnection: close - Closing underlying quinn::Connection.");
         self.conn_handle
             .close(0u32.into(), b"Server initiated stream close");
-        info!("QUIC server connection (underlying quinn::Connection) closed.");
+        info!(local = ?self.local_s_addr, peer = ?self.conn_handle.remote_address(), "QuicServerConnection: close - Underlying quinn::Connection close initiated.");
         Ok(())
     }
 }
@@ -136,31 +137,54 @@ impl TraitListener for QuicServerListener {
     async fn accept(&mut self) -> Result<Box<dyn TraitConnection>, TransportError> {
         // If there's no active QUIC connection, accept one first.
         if self.active_connection.is_none() {
-            info!(
-                "QUIC Server Listener: No active connection, attempting to accept a new QUIC connection..."
+            println!(
+                "QuicServerListener: accept - No active QUIC connection at {}. START_AWAIT for endpoint.accept",
+                self.local_addr
             );
-            match self.endpoint.accept().await {
-                Some(conn_pending) => match conn_pending.await {
-                    Ok(new_quinn_conn) => {
-                        info!(
-                            "QUIC Server Listener: Accepted new QUIC connection from {}",
-                            new_quinn_conn.remote_address()
-                        );
-                        self.active_connection = Some(Arc::new(new_quinn_conn));
+            let endpoint_accept_result = self.endpoint.accept().await;
+            println!(
+                "QuicServerListener: accept - END_AWAIT for endpoint.accept at {}",
+                self.local_addr
+            );
+
+            match endpoint_accept_result {
+                Some(conn_pending) => {
+                    println!(
+                        "QuicServerListener: accept - New connection pending at {}. START_AWAIT for conn_pending.await",
+                        self.local_addr
+                    );
+                    let conn_pending_result = conn_pending.await;
+                    println!(
+                        "QuicServerListener: accept - END_AWAIT for conn_pending.await at {}",
+                        self.local_addr
+                    );
+
+                    match conn_pending_result {
+                        Ok(new_quinn_conn) => {
+                            println!(
+                                "QuicServerListener: accept - Accepted new QUIC connection from {} at {}",
+                                new_quinn_conn.remote_address(),
+                                self.local_addr
+                            );
+                            self.active_connection = Some(Arc::new(new_quinn_conn));
+                        }
+                        Err(e) => {
+                            println!(
+                                "QuicServerListener: accept - Failed to establish incoming QUIC connection at {}: {}",
+                                self.local_addr, e
+                            );
+                            return Err(TransportError::Connection(format!(
+                                "QUIC connection establishment failed: {}",
+                                e
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        error!(
-                            "QUIC Server Listener: Failed to establish incoming QUIC connection: {}",
-                            e
-                        );
-                        return Err(TransportError::Connection(format!(
-                            "QUIC connection establishment failed: {}",
-                            e
-                        )));
-                    }
-                },
+                }
                 None => {
-                    error!("QUIC Server Listener: Endpoint closed, cannot accept new connections.");
+                    println!(
+                        "QuicServerListener: accept - Endpoint closed at {}, cannot accept new connections.",
+                        self.local_addr
+                    );
                     return Err(TransportError::Connection("Endpoint closed".to_string()));
                 }
             }
@@ -169,15 +193,24 @@ impl TraitListener for QuicServerListener {
         // Now, with an active QUIC connection, accept a bidirectional stream on it.
         let quinn_conn = self.active_connection.as_ref().unwrap().clone(); // Clone Arc
 
-        info!(
-            "QUIC Server Listener: Attempting to accept a new bidirectional stream on existing QUIC connection from {}",
-            quinn_conn.remote_address()
+        println!(
+            "QuicServerListener: accept - Active QUIC connection exists from {} at {}. START_AWAIT for quinn_conn.accept_bi",
+            quinn_conn.remote_address(),
+            self.local_addr
         );
-        match quinn_conn.accept_bi().await {
+        let accept_bi_result = quinn_conn.accept_bi().await;
+        println!(
+            "QuicServerListener: accept - END_AWAIT for quinn_conn.accept_bi from {} at {}",
+            quinn_conn.remote_address(),
+            self.local_addr
+        );
+
+        match accept_bi_result {
             Ok((send_stream, recv_stream)) => {
-                info!(
-                    "QUIC Server Listener: Accepted new bidirectional stream from {}",
-                    quinn_conn.remote_address()
+                println!(
+                    "QuicServerListener: accept - Accepted new bidirectional stream from {} at {}",
+                    quinn_conn.remote_address(),
+                    self.local_addr
                 );
                 let server_connection = QuicServerConnection {
                     conn_handle: quinn_conn.clone(), // Clone Arc for the new stream handler
@@ -189,8 +222,9 @@ impl TraitListener for QuicServerListener {
                 Ok(Box::new(server_connection))
             }
             Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
-                warn!(
-                    "QUIC Server Listener: Connection was application closed while trying to accept a stream. Clearing active connection."
+                println!(
+                    "QuicServerListener: accept - Connection was application closed while trying to accept a stream at {}. Clearing active connection.",
+                    self.local_addr
                 );
                 self.active_connection = None; // Connection is gone, need to accept a new one next time.
                 Err(TransportError::Connection(
@@ -198,8 +232,9 @@ impl TraitListener for QuicServerListener {
                 ))
             }
             Err(quinn::ConnectionError::LocallyClosed) => {
-                warn!(
-                    "QUIC Server Listener: Connection was locally closed while trying to accept a stream. Clearing active connection."
+                println!(
+                    "QuicServerListener: accept - Connection was locally closed while trying to accept a stream at {}. Clearing active connection.",
+                    self.local_addr
                 );
                 self.active_connection = None;
                 Err(TransportError::Connection(
@@ -207,9 +242,9 @@ impl TraitListener for QuicServerListener {
                 ))
             }
             Err(e) => {
-                error!(
-                    "QUIC Server Listener: Failed to accept bidirectional stream: {}. Clearing active connection.",
-                    e
+                println!(
+                    "QuicServerListener: accept - Failed to accept bidirectional stream at {}: {}. Clearing active connection.",
+                    self.local_addr, e
                 );
                 self.active_connection = None; // Assume connection is problematic
                 Err(TransportError::Connection(format!(
@@ -287,13 +322,42 @@ impl ServerTransport for QuicServer {
             );
         }
 
-        let endpoint = Endpoint::server(self.server_config.clone(), listen_addr)
-            .map_err(TransportError::Io)?; // quinn::Endpoint::server returns std::io::Error
+        println!(
+            "QuicServer: listen - Creating server endpoint at {}",
+            listen_addr
+        );
+        let endpoint_result = Endpoint::server(self.server_config.clone(), listen_addr);
 
-        let actual_local_addr = endpoint.local_addr().map_err(TransportError::Io)?; // Also std::io::Error
+        let endpoint = match endpoint_result {
+            Ok(ep) => {
+                println!("QuicServer: listen - Successfully created server endpoint");
+                ep
+            }
+            Err(e) => {
+                println!(
+                    "QuicServer: listen - Failed to create server endpoint: {}",
+                    e
+                );
+                return Err(TransportError::Io(e));
+            }
+        };
 
-        info!(
-            "QUIC server endpoint created, listening on {}",
+        println!("QuicServer: listen - Getting local_addr from endpoint");
+        let local_addr_result = endpoint.local_addr();
+
+        let actual_local_addr = match local_addr_result {
+            Ok(addr) => {
+                println!("QuicServer: listen - Got local_addr: {}", addr);
+                addr
+            }
+            Err(e) => {
+                println!("QuicServer: listen - Failed to get local_addr: {}", e);
+                return Err(TransportError::Io(e));
+            }
+        };
+
+        println!(
+            "QuicServer: listen - QUIC server endpoint created and listening on {}",
             actual_local_addr
         );
 
