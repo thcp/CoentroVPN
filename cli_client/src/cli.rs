@@ -133,9 +133,10 @@ fn start_server(config: &Config) -> CliResult<()> {
             "Core engine process exited with non-zero status: {:?}",
             status
         );
-          return Err(CliError::IoError(std::io::Error::other(
-            format!("Core engine process failed: {:?}", status),
-        )));
+        return Err(CliError::IoError(std::io::Error::other(format!(
+            "Core engine process failed: {:?}",
+            status
+        ))));
     }
 
     info!("CoentroVPN server started successfully");
@@ -165,9 +166,10 @@ fn start_client(config: &Config) -> CliResult<()> {
             "Core engine process exited with non-zero status: {:?}",
             status
         );
-          return Err(CliError::IoError(std::io::Error::other(
-            format!("Core engine process failed: {:?}", status),
-        )));
+        return Err(CliError::IoError(std::io::Error::other(format!(
+            "Core engine process failed: {:?}",
+            status
+        ))));
     }
 
     info!("CoentroVPN client started successfully");
