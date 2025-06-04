@@ -57,6 +57,20 @@ The dashboard is a React application built with Vite.
 
 ## Running the Components
 
+### Running the Helper Daemon
+
+The helper daemon requires elevated privileges to perform system-level operations.
+
+1. Install the helper daemon using the provided installation script:
+   ```bash
+   sudo ./scripts/install_helper.sh
+   ```
+   For macOS:
+   ```bash
+   sudo ./scripts/install_helper_macos.sh
+   ```
+   See [Helper Installation Guide](docs/helper_installation.md) for more details.
+
 ### Running the Core Engine (Server)
 
 The core engine acts as the VPN server.
@@ -82,6 +96,20 @@ The CLI client connects to the VPN server.
     ```
     Replace `127.0.0.1:7890` with your server's address and port if different.
     Refer to `cli_client/src/cli.rs` for all available commands and options.
+
+### Running the Unprivileged Client
+
+The unprivileged client (`coentro_client`) communicates with the helper daemon to perform privileged operations.
+
+1. Ensure the helper daemon is installed and running (see above).
+2. From the project root:
+   ```bash
+   cargo run --package coentro_client
+   ```
+   Or, to test the connection to the helper daemon:
+   ```bash
+   cargo run --package coentro_client -- --ping-helper
+   ```
 
 ### Running the Dashboard
 

@@ -1,0 +1,18 @@
+[package]
+name = "coentro_helper"
+version = "0.1.0"
+edition = "2021"
+description = "Privileged helper daemon for CoentroVPN split daemon architecture"
+
+[dependencies]
+coentro_ipc = { path = "../coentro_ipc" }
+tokio = { version = "1.28", features = ["full"] }
+log = "0.4"
+env_logger = "0.10"
+thiserror = "1.0"
+clap = { version = "4.3", features = ["derive"] }
+nix = { version = "0.26", features = ["socket", "user"] }
+tun = "0.5"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+async-trait = "0.1"

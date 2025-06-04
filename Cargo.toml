@@ -5,5 +5,8 @@ members = [
     "management_api",
     "cli_client",
     "gui_client",
-    "shared_utils"
+    "shared_utils",
+    "coentro_ipc",
+    "coentro_helper",
+    "coentro_client"
 ]
