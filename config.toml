@@ -29,7 +29,7 @@ verify_tls = true
 # Client-specific configuration (used when role is "client")
 [client]
 # Server address to connect to
-server_address = "vpn.example.com"
+server_address = "127.0.0.1:8080"
 # Reconnect automatically on disconnect
 auto_reconnect = true
 # Reconnect interval in seconds

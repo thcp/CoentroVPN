@@ -4,9 +4,19 @@ mod tunnel;
 use std::path::Path;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
+use clap::Parser;
 
 use shared_utils::config::ConfigManager;
 use shared_utils::tunnel::TunnelManager;
+
+/// CoentroVPN Core Engine
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Path to the configuration file
+    #[arg(short, long, value_name = "FILE", default_value = "config.toml")]
+    config: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,8 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting CoentroVPN core engine");
     debug!("Initializing with configuration");
 
+    // Parse command-line arguments
+    let cli = Cli::parse();
+    debug!("Using configuration file: {}", cli.config);
+
     // Load configuration
-    let config_path = Path::new("config.toml");
+    let config_path = Path::new(&cli.config);
     let config_manager = match ConfigManager::load(config_path) {
         Ok(manager) => manager,
         Err(err) => {
