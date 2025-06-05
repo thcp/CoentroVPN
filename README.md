@@ -208,7 +208,9 @@ cargo run --release --bin cli_client -- --config config.custom.toml
 
 ---
 
-## 📦 Docker Compose Example
+## 📦 Docker Deployment Options
+
+### Standard Docker Compose Example
 
 ```yaml
 version: '3.8'
@@ -232,6 +234,18 @@ services:
     ports:
       - "3000:3000"
 ```
+
+### Distroless Deployment (Enhanced Security)
+
+For production environments, we provide distroless Docker images that offer enhanced security and minimal footprint:
+
+```bash
+# Using the deployment script
+./scripts/docker-deploy.sh build
+./scripts/docker-deploy.sh up
+```
+
+See [Docker Deployment Guide](DOCKER.md) for detailed instructions on deploying CoentroVPN using distroless containers.
 
 ---
 

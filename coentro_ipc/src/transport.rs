@@ -530,6 +530,9 @@ mod tests {
         let request_received = Arc::new(Mutex::new(false));
         let request_received_clone = request_received.clone();
 
+        // Use a channel to signal when the server is ready
+        let (tx, rx) = std::sync::mpsc::channel();
+
         // Start the server in a separate thread
         let socket_path_clone = socket_path.clone();
         let server_thread = thread::spawn(move || {
@@ -544,6 +547,9 @@ mod tests {
                 let listener = UnixSocketListener::bind_with_auth(&socket_path_clone, auth_config)
                     .await
                     .unwrap();
+                
+                // Signal that the server is ready to accept connections
+                tx.send(()).unwrap();
                 let mut connection = listener.accept().await.unwrap();
 
                 // Verify we got the correct peer credentials
@@ -565,12 +571,36 @@ mod tests {
             });
         });
 
-        // Give the server a moment to start
-        thread::sleep(Duration::from_millis(100));
+        // Wait for the server to be ready before attempting to connect
+        rx.recv().unwrap();
 
         // Run the client
         runtime.block_on(async {
-            let mut client = UnixSocketTransport::connect(&socket_path).await.unwrap();
+            // Retry connection with exponential backoff (should succeed on first try now)
+            let mut client = None;
+            let mut retry_count = 0;
+            let max_retries = 5;
+            let mut delay_ms = 50;
+
+            while retry_count < max_retries {
+                match UnixSocketTransport::connect(&socket_path).await {
+                    Ok(c) => {
+                        client = Some(c);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("Connection attempt {} failed: {}", retry_count + 1, e);
+                        retry_count += 1;
+                        if retry_count >= max_retries {
+                            panic!("Failed to connect after {} attempts", max_retries);
+                        }
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2; // Exponential backoff
+                    }
+                }
+            }
+
+            let mut client = client.unwrap();
 
             // Send a ping request
             client.send_request(&ClientRequest::Ping).await.unwrap();
@@ -582,7 +612,8 @@ mod tests {
                 _ => panic!("Unexpected response type"),
             }
 
-            client.close().await.unwrap();
+            // Don't unwrap here, as the connection might already be closed by the server
+            let _ = client.close().await;
         });
 
         // Wait for the server to finish
@@ -608,6 +639,9 @@ mod tests {
             std::fs::remove_file(&socket_path).unwrap();
         }
 
+        // Use a channel to signal when the server is ready
+        let (tx, rx) = std::sync::mpsc::channel();
+
         // Start the server in a separate thread with restricted auth
         let socket_path_clone = socket_path.clone();
         let server_thread = thread::spawn(move || {
@@ -622,6 +656,9 @@ mod tests {
                 let listener = UnixSocketListener::bind_with_auth(&socket_path_clone, auth_config)
                     .await
                     .unwrap();
+                
+                // Signal that the server is ready to accept connections
+                tx.send(()).unwrap();
 
                 // This should fail with an authentication error since we're not using the allowed UID
                 match listener.accept().await {
@@ -638,13 +675,37 @@ mod tests {
             });
         });
 
-        // Give the server a moment to start
-        thread::sleep(Duration::from_millis(100));
+        // Wait for the server to be ready before attempting to connect
+        rx.recv().unwrap();
 
         // Run the client - this should connect but the server should reject the connection
         runtime.block_on(async {
+            // Retry connection with exponential backoff (should succeed on first try now)
+            let mut client = None;
+            let mut retry_count = 0;
+            let max_retries = 5;
+            let mut delay_ms = 50;
+
+            while retry_count < max_retries {
+                match UnixSocketTransport::connect(&socket_path).await {
+                    Ok(c) => {
+                        client = Some(c);
+                        break;
+                    }
+                    Err(e) => {
+                        println!("Connection attempt {} failed: {}", retry_count + 1, e);
+                        retry_count += 1;
+                        if retry_count >= max_retries {
+                            panic!("Failed to connect after {} attempts", max_retries);
+                        }
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2; // Exponential backoff
+                    }
+                }
+            }
+
             // The connection itself should succeed
-            let mut client = UnixSocketTransport::connect(&socket_path).await.unwrap();
+            let mut client = client.unwrap();
 
             // But when we try to send a request, it should fail because the server closed the connection
             match client.send_request(&ClientRequest::Ping).await {

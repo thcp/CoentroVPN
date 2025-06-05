@@ -1,0 +1,70 @@
+# Dockerfile.server for CoentroVPN
+# Multi-stage build for a minimal, secure server image
+
+# Stage 1: Builder
+FROM rust:1.87.0-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a new empty project
+WORKDIR /app
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+COPY Cargo.toml Cargo.lock ./
+COPY core_engine/Cargo.toml ./core_engine/
+COPY management_api/Cargo.toml ./management_api/
+COPY coentro_helper/Cargo.toml ./coentro_helper/
+COPY coentro_ipc/Cargo.toml ./coentro_ipc/
+COPY shared_utils/Cargo.toml ./shared_utils/
+
+# Build dependencies (this will be cached if dependencies don't change)
+RUN cargo build --release \
+    --bin core_engine \
+    --bin management_api \
+    --bin coentro_helper
+
+# Remove the dummy source files
+RUN rm -rf src target/release/deps/core_engine* \
+    target/release/deps/management_api* \
+    target/release/deps/coentro_helper*
+
+# Copy the actual source code
+COPY core_engine/src ./core_engine/src
+COPY management_api/src ./management_api/src
+COPY coentro_helper/src ./coentro_helper/src
+COPY coentro_ipc/src ./coentro_ipc/src
+COPY shared_utils/src ./shared_utils/src
+
+# Build the actual binaries
+RUN cargo build --release \
+    --bin core_engine \
+    --bin management_api \
+    --bin coentro_helper
+
+# Stage 2: Runtime (distroless)
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+
+# Copy the compiled binaries
+COPY --from=builder /app/target/release/core_engine /usr/local/bin/
+COPY --from=builder /app/target/release/management_api /usr/local/bin/
+COPY --from=builder /app/target/release/coentro_helper /usr/local/bin/
+
+# Create a directory for configuration and data
+WORKDIR /app
+VOLUME /app/config
+VOLUME /app/data
+
+# Expose necessary ports (adjust based on your actual application needs)
+EXPOSE 8080
+EXPOSE 51820
+
+# Set the entrypoint to the core engine
+# Note: In a real deployment, you might want to use a script to start all components
+ENTRYPOINT ["/usr/local/bin/core_engine"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/management_api", "--health-check"] || exit 1

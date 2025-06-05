@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  coentro-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: coentro-server
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN  # Required for network operations
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    ports:
+      - "8080:8080"  # Management API
+      - "51820:51820" # VPN traffic
+    networks:
+      - coentro-net
+    environment:
+      - LOG_LEVEL=info
+      - CONFIG_PATH=/app/config/config.toml
+
+  coentro-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: coentro-client
+    restart: unless-stopped
+    depends_on:
+      - coentro-server
+    volumes:
+      - ./config:/app/config
+    networks:
+      - coentro-net
+    environment:
+      - LOG_LEVEL=info
+      - SERVER_HOST=coentro-server
+      - CONFIG_PATH=/app/config/config.toml
+    # Override the default entrypoint command with a specific command
+    # Uncomment and modify as needed
+    # command: ["connect", "--server", "coentro-server"]
+
+networks:
+  coentro-net:
+    driver: bridge
