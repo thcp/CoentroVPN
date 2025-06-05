@@ -337,7 +337,8 @@ impl UnixSocketListener {
             #[cfg(target_os = "linux")]
             return Err(IpcError::Authentication(format!(
                 "Connection from unauthorized user: UID={}, GID={}",
-                peer_cred.uid(), peer_cred.gid()
+                peer_cred.uid(),
+                peer_cred.gid()
             )));
 
             #[cfg(target_os = "macos")]
@@ -355,7 +356,7 @@ impl UnixSocketListener {
     fn get_peer_credentials(stream: &UnixStream) -> io::Result<UnixCredentials> {
         // Get the raw file descriptor
         let raw_fd = stream.as_raw_fd();
-        
+
         // Use nix to get peer credentials
         nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
