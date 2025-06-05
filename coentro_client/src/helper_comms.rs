@@ -3,8 +3,8 @@
 //! This module handles communication with the helper daemon via IPC.
 
 use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails};
-use coentro_ipc::transport::{IpcError, IpcResult, IpcTransport, UnixSocketTransport};
-use log::{debug, error, info, warn};
+use coentro_ipc::transport::{IpcTransport, UnixSocketTransport};
+use log::{debug, error};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;

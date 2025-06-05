@@ -18,22 +18,27 @@ pub enum NetworkError {
 
     /// TUN device error
     #[error("TUN device error: {0}")]
+    #[allow(dead_code)]
     TunDevice(String),
 
     /// Routing error
     #[error("Routing error: {0}")]
+    #[allow(dead_code)]
     Routing(String),
 
     /// DNS configuration error
     #[error("DNS configuration error: {0}")]
+    #[allow(dead_code)]
     DnsConfig(String),
 
     /// Permission error
     #[error("Permission error: {0}")]
+    #[allow(dead_code)]
     Permission(String),
 
     /// System command error
     #[error("System command error: {0}")]
+    #[allow(dead_code)]
     SystemCommand(String),
 
     /// Other error
@@ -45,12 +50,15 @@ pub enum NetworkError {
 #[derive(Debug, Clone)]
 pub struct TunConfig {
     /// Name of the interface (may be ignored on some platforms)
+    #[allow(dead_code)]
     pub name: Option<String>,
 
     /// IP address and prefix length (e.g., "10.0.0.1/24")
+    #[allow(dead_code)]
     pub ip_config: String,
 
     /// MTU value
+    #[allow(dead_code)]
     pub mtu: u32,
 }
 
@@ -58,19 +66,24 @@ pub struct TunConfig {
 #[derive(Debug, Clone)]
 pub struct TunDetails {
     /// Name of the created interface
+    #[allow(dead_code)]
     pub name: String,
 
     /// Assigned IP address and prefix length
+    #[allow(dead_code)]
     pub ip_config: String,
 
     /// Assigned MTU value
+    #[allow(dead_code)]
     pub mtu: u32,
 
     /// File descriptor for the TUN device (platform-specific)
+    #[allow(dead_code)]
     pub fd: i32,
 }
 
 /// Network Manager trait
+#[allow(dead_code)]
 #[async_trait]
 pub trait NetworkManager: Send + Sync {
     /// Create a TUN interface
@@ -109,6 +122,7 @@ pub trait NetworkManager: Send + Sync {
 pub struct LinuxNetworkManager;
 
 impl LinuxNetworkManager {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self
     }
@@ -162,6 +176,7 @@ impl NetworkManager for LinuxNetworkManager {
 /// For Sprint 1, we're just returning a concrete type instead of a trait object
 /// since async traits are not yet fully supported for trait objects.
 /// This will be refactored in a future sprint.
+#[allow(dead_code)]
 pub fn create_network_manager() -> LinuxNetworkManager {
     // For now, just return a Linux network manager
     // In later sprints, this will detect the platform and return the appropriate implementation

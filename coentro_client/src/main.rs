@@ -7,7 +7,7 @@
 mod helper_comms;
 
 use clap::Parser;
-use log::{debug, error, info, warn, LevelFilter};
+use log::{debug, error, info, LevelFilter};
 use std::path::PathBuf;
 
 /// Command-line arguments for the client

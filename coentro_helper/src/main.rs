@@ -9,7 +9,7 @@ mod network_manager;
 
 use clap::Parser;
 use log::{debug, error, info, warn, LevelFilter};
-use shared_utils::config::{Config, ConfigManager};
+use shared_utils::config::Config;
 use std::path::PathBuf;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::oneshot;
@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Signal the IPC handler to shut down
-    if let Err(_) = shutdown_tx.send(()) {
+    if shutdown_tx.send(()).is_err() {
         error!("Failed to send shutdown signal");
     }
 

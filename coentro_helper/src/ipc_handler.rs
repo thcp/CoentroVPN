@@ -3,7 +3,7 @@
 //! This module handles IPC connections and requests from the client.
 
 use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails};
-use coentro_ipc::transport::{AuthConfig, IpcResult, UnixSocketConnection, UnixSocketListener};
+use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
 use log::{debug, error, info};
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,6 +22,7 @@ pub struct IpcHandler {
 #[derive(Clone)]
 struct ClientState {
     /// Client process ID (for logging/debugging)
+    #[allow(dead_code)]
     pid: u32,
     /// Whether the client has an active tunnel
     tunnel_active: bool,

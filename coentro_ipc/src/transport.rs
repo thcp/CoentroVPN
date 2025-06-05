@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::os::unix::net::SocketAddr;
 use std::path::Path;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -92,13 +91,13 @@ impl UnixSocketTransport {
         // Write length prefix (u32)
         let len = data.len() as u32;
         match timeout(timeout_duration, self.stream.write_all(&len.to_le_bytes())).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Write operation timed out".to_string())),
         };
 
         // Write data
         match timeout(timeout_duration, self.stream.write_all(data)).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Write operation timed out".to_string())),
         };
 
@@ -112,7 +111,7 @@ impl UnixSocketTransport {
         // Read length prefix (u32)
         let mut len_buf = [0u8; 4];
         match timeout(timeout_duration, self.stream.read_exact(&mut len_buf)).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Read operation timed out".to_string())),
         };
 
@@ -130,7 +129,7 @@ impl UnixSocketTransport {
         // Read data
         let mut data = vec![0u8; len];
         match timeout(timeout_duration, self.stream.read_exact(&mut data)).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Read operation timed out".to_string())),
         };
 
@@ -141,7 +140,7 @@ impl UnixSocketTransport {
 #[async_trait]
 impl IpcTransport for UnixSocketTransport {
     async fn send_request(&mut self, request: &ClientRequest) -> IpcResult<()> {
-        let serialized = bincode::serialize(request).map_err(|e| IpcError::Serialization(e))?;
+        let serialized = bincode::serialize(request).map_err(IpcError::Serialization)?;
 
         self.send_message(&serialized).await
     }
@@ -149,14 +148,14 @@ impl IpcTransport for UnixSocketTransport {
     async fn receive_response(&mut self) -> IpcResult<HelperResponse> {
         let data = self.receive_message().await?;
 
-        let response = bincode::deserialize(&data).map_err(|e| IpcError::Serialization(e))?;
+        let response = bincode::deserialize(&data).map_err(IpcError::Serialization)?;
 
         Ok(response)
     }
 
     async fn close(&mut self) -> IpcResult<()> {
         // UnixStream doesn't have an explicit close method, but we can shut it down
-        self.stream.shutdown().await.map_err(|e| IpcError::Io(e))?;
+        self.stream.shutdown().await.map_err(IpcError::Io)?;
 
         Ok(())
     }
@@ -455,20 +454,20 @@ impl UnixSocketConnection {
 
     /// Helper method to send a message with length prefix
     pub async fn send_response(&mut self, response: &HelperResponse) -> IpcResult<()> {
-        let serialized = bincode::serialize(response).map_err(|e| IpcError::Serialization(e))?;
+        let serialized = bincode::serialize(response).map_err(IpcError::Serialization)?;
 
         let timeout_duration = Duration::from_secs(5);
 
         // Write length prefix (u32)
         let len = serialized.len() as u32;
         match timeout(timeout_duration, self.stream.write_all(&len.to_le_bytes())).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Write operation timed out".to_string())),
         };
 
         // Write data
         match timeout(timeout_duration, self.stream.write_all(&serialized)).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Write operation timed out".to_string())),
         };
 
@@ -482,7 +481,7 @@ impl UnixSocketConnection {
         // Read length prefix (u32)
         let mut len_buf = [0u8; 4];
         match timeout(timeout_duration, self.stream.read_exact(&mut len_buf)).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Read operation timed out".to_string())),
         };
 
@@ -500,19 +499,19 @@ impl UnixSocketConnection {
         // Read data
         let mut data = vec![0u8; len];
         match timeout(timeout_duration, self.stream.read_exact(&mut data)).await {
-            Ok(result) => result.map_err(|e| IpcError::Io(e))?,
+            Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Read operation timed out".to_string())),
         };
 
         // Deserialize
-        let request = bincode::deserialize(&data).map_err(|e| IpcError::Serialization(e))?;
+        let request = bincode::deserialize(&data).map_err(IpcError::Serialization)?;
 
         Ok(request)
     }
 
     /// Close the connection
     pub async fn close(&mut self) -> IpcResult<()> {
-        self.stream.shutdown().await.map_err(|e| IpcError::Io(e))?;
+        self.stream.shutdown().await.map_err(IpcError::Io)?;
 
         Ok(())
     }
@@ -527,7 +526,6 @@ impl UnixSocketConnection {
 mod tests {
     use super::*;
     use crate::messages::{ClientRequest, HelperResponse};
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use tokio::runtime::Runtime;
