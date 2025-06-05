@@ -547,7 +547,7 @@ mod tests {
                 let listener = UnixSocketListener::bind_with_auth(&socket_path_clone, auth_config)
                     .await
                     .unwrap();
-                
+
                 // Signal that the server is ready to accept connections
                 tx.send(()).unwrap();
                 let mut connection = listener.accept().await.unwrap();
@@ -656,7 +656,7 @@ mod tests {
                 let listener = UnixSocketListener::bind_with_auth(&socket_path_clone, auth_config)
                     .await
                     .unwrap();
-                
+
                 // Signal that the server is ready to accept connections
                 tx.send(()).unwrap();
 
