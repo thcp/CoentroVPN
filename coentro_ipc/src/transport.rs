@@ -16,10 +16,10 @@ use tokio::time::{timeout, Duration};
 
 // Platform-specific imports for peer credentials
 #[cfg(target_os = "linux")]
-use std::os::unix::net::UCred;
+use nix::sys::socket::UnixCredentials;
 
 #[cfg(target_os = "macos")]
-use libc::xucred as UCred;
+use libc::xucred as UnixCredentials;
 
 /// Result type for IPC operations
 pub type IpcResult<T> = Result<T, IpcError>;
@@ -225,19 +225,19 @@ impl AuthConfig {
 
     /// Check if a user is allowed based on their credentials
     #[cfg(target_os = "linux")]
-    pub fn is_allowed(&self, creds: &UCred) -> bool {
+    pub fn is_allowed(&self, creds: &UnixCredentials) -> bool {
         // Always allow root if configured to do so
-        if self.allow_root && creds.uid == 0 {
+        if self.allow_root && creds.uid() == 0 {
             return true;
         }
 
         // Check if the UID is allowed
-        if self.allowed_uids.contains(&creds.uid) {
+        if self.allowed_uids.contains(&creds.uid()) {
             return true;
         }
 
         // Check if the GID is allowed
-        if self.allowed_gids.contains(&creds.gid) {
+        if self.allowed_gids.contains(&creds.gid()) {
             return true;
         }
 
@@ -246,7 +246,7 @@ impl AuthConfig {
 
     /// Check if a user is allowed based on their credentials
     #[cfg(target_os = "macos")]
-    pub fn is_allowed(&self, creds: &UCred) -> bool {
+    pub fn is_allowed(&self, creds: &UnixCredentials) -> bool {
         // Always allow root if configured to do so
         if self.allow_root && creds.cr_uid == 0 {
             return true;
@@ -337,7 +337,7 @@ impl UnixSocketListener {
             #[cfg(target_os = "linux")]
             return Err(IpcError::Authentication(format!(
                 "Connection from unauthorized user: UID={}, GID={}",
-                peer_cred.uid, peer_cred.gid
+                peer_cred.uid(), peer_cred.gid()
             )));
 
             #[cfg(target_os = "macos")]
@@ -352,34 +352,18 @@ impl UnixSocketListener {
 
     /// Get the credentials of the peer connected to the given socket
     #[cfg(target_os = "linux")]
-    fn get_peer_credentials(stream: &UnixStream) -> io::Result<UCred> {
+    fn get_peer_credentials(stream: &UnixStream) -> io::Result<UnixCredentials> {
         // Get the raw file descriptor
         let raw_fd = stream.as_raw_fd();
-
-        // Use the getsockopt system call to get the peer credentials
-        unsafe {
-            let mut ucred = std::mem::MaybeUninit::<UCred>::uninit();
-            let ucred_size = std::mem::size_of::<UCred>() as libc::socklen_t;
-
-            let ret = libc::getsockopt(
-                raw_fd,
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                ucred.as_mut_ptr() as *mut libc::c_void,
-                &mut (ucred_size as libc::socklen_t),
-            );
-
-            if ret == 0 {
-                Ok(ucred.assume_init())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        }
+        
+        // Use nix to get peer credentials
+        nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 
     /// Get the credentials of the peer connected to the given socket
     #[cfg(target_os = "macos")]
-    fn get_peer_credentials(stream: &UnixStream) -> io::Result<UCred> {
+    fn get_peer_credentials(stream: &UnixStream) -> io::Result<UnixCredentials> {
         // Get the raw file descriptor
         let raw_fd = stream.as_raw_fd();
 
@@ -415,25 +399,25 @@ impl Drop for UnixSocketListener {
 /// Unix Domain Socket connection for the helper daemon
 pub struct UnixSocketConnection {
     stream: UnixStream,
-    peer_cred: UCred,
+    peer_cred: UnixCredentials,
 }
 
 impl UnixSocketConnection {
     /// Get the peer credentials (UID, GID)
-    pub fn peer_credentials(&self) -> &UCred {
+    pub fn peer_credentials(&self) -> &UnixCredentials {
         &self.peer_cred
     }
 
     /// Get the peer UID
     #[cfg(target_os = "linux")]
     pub fn peer_uid(&self) -> u32 {
-        self.peer_cred.uid
+        self.peer_cred.uid()
     }
 
     /// Get the peer GID
     #[cfg(target_os = "linux")]
     pub fn peer_gid(&self) -> u32 {
-        self.peer_cred.gid
+        self.peer_cred.gid()
     }
 
     /// Get the peer UID
