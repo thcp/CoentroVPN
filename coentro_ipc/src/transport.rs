@@ -359,7 +359,7 @@ impl UnixSocketListener {
 
         // Use nix to get peer credentials
         nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::other(e))
     }
 
     /// Get the credentials of the peer connected to the given socket
