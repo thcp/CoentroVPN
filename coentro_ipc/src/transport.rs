@@ -16,7 +16,7 @@ use tokio::time::{timeout, Duration};
 
 // Platform-specific imports for peer credentials
 #[cfg(target_os = "linux")]
-use std::os::unix::ucred::UCred;
+use std::os::unix::net::UCred;
 
 #[cfg(target_os = "macos")]
 use libc::xucred as UCred;
