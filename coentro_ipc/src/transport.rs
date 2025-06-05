@@ -16,7 +16,7 @@ use tokio::time::{timeout, Duration};
 
 // Platform-specific imports for peer credentials
 #[cfg(target_os = "linux")]
-use std::os::unix::ucred::{self, UCred};
+use std::os::unix::ucred::UCred;
 
 #[cfg(target_os = "macos")]
 use libc::xucred as UCred;
@@ -358,8 +358,8 @@ impl UnixSocketListener {
 
         // Use the getsockopt system call to get the peer credentials
         unsafe {
-            let mut ucred = std::mem::MaybeUninit::<ucred::UCred>::uninit();
-            let ucred_size = std::mem::size_of::<ucred::UCred>() as libc::socklen_t;
+            let mut ucred = std::mem::MaybeUninit::<UCred>::uninit();
+            let ucred_size = std::mem::size_of::<UCred>() as libc::socklen_t;
 
             let ret = libc::getsockopt(
                 raw_fd,
