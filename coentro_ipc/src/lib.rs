@@ -8,5 +8,5 @@ pub mod messages;
 pub mod transport;
 
 /// Re-export common types for convenience
-pub use messages::{ClientRequest, HelperResponse, TunnelSetupRequest, TunnelReadyDetails};
+pub use messages::{ClientRequest, HelperResponse, TunnelReadyDetails, TunnelSetupRequest};
 pub use transport::{IpcError, IpcResult, IpcTransport};

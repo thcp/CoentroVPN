@@ -3,12 +3,12 @@
 //! This module handles IPC connections and requests from the client.
 
 use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails};
-use coentro_ipc::transport::{UnixSocketListener, UnixSocketConnection, AuthConfig, IpcResult};
-use log::{info, error, debug};
+use coentro_ipc::transport::{AuthConfig, IpcResult, UnixSocketConnection, UnixSocketListener};
+use log::{debug, error, info};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{oneshot, mpsc};
-use std::collections::HashMap;
+use tokio::sync::{mpsc, oneshot};
 
 /// IPC Handler for the helper daemon
 pub struct IpcHandler {
@@ -48,9 +48,8 @@ impl IpcHandler {
         allowed_uids: Vec<u32>,
     ) -> anyhow::Result<()> {
         // Create an authentication configuration
-        let mut auth_config = AuthConfig::new()
-            .allow_root(true); // Allow root by default
-        
+        let mut auth_config = AuthConfig::new().allow_root(true); // Allow root by default
+
         // If SUDO_UID is set, allow the original user
         if let Ok(uid) = std::env::var("SUDO_UID") {
             if let Ok(uid) = uid.parse::<u32>() {
@@ -58,18 +57,22 @@ impl IpcHandler {
                 auth_config = auth_config.allow_uid(uid);
             }
         }
-        
+
         // Allow UIDs from configuration
         for uid in allowed_uids {
             debug!("Allowing UID {} (from configuration)", uid);
             auth_config = auth_config.allow_uid(uid);
         }
-        
+
         // Create the Unix Domain Socket listener with authentication
-        let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config).await
+        let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to bind to socket: {}", e))?;
 
-        info!("IPC handler listening on {}", socket_path.as_ref().display());
+        info!(
+            "IPC handler listening on {}",
+            socket_path.as_ref().display()
+        );
 
         // Channel for client tasks to signal completion
         let (client_done_tx, mut client_done_rx) = mpsc::channel::<u32>(10);
@@ -175,7 +178,10 @@ impl IpcHandler {
     ) -> anyhow::Result<()> {
         let peer_uid = connection.peer_uid();
         let peer_gid = connection.peer_gid();
-        debug!("Handling client ID={} (UID={}, GID={})", client_id, peer_uid, peer_gid);
+        debug!(
+            "Handling client ID={} (UID={}, GID={})",
+            client_id, peer_uid, peer_gid
+        );
 
         loop {
             // Receive a request from the client
@@ -189,22 +195,28 @@ impl IpcHandler {
                             return Ok(());
                         }
                     }
-                    error!("Error receiving request from client ID={}: {}", client_id, e);
+                    error!(
+                        "Error receiving request from client ID={}: {}",
+                        client_id, e
+                    );
                     return Err(anyhow::anyhow!("Failed to receive request: {}", e));
                 }
             };
 
-            debug!("Received request from client ID={}: {:?}", client_id, request);
+            debug!(
+                "Received request from client ID={}: {:?}",
+                client_id, request
+            );
 
             // Process the request
             let response = match request {
                 ClientRequest::Ping => {
                     debug!("Responding to ping from client ID={}", client_id);
                     HelperResponse::Pong
-                },
+                }
                 ClientRequest::GetStatus => {
                     debug!("Responding to status request from client ID={}", client_id);
-                    
+
                     // Get the client state
                     let client_state = {
                         let active_clients = active_clients.lock().unwrap();
@@ -221,19 +233,19 @@ impl IpcHandler {
                     } else {
                         HelperResponse::Error("Client state not found".to_string())
                     }
-                },
+                }
                 ClientRequest::SetupTunnel(_) => {
                     // In Sprint 1, we're just implementing the basic IPC framework
                     // Actual tunnel setup will be implemented in Sprint 2
                     debug!("Tunnel setup not implemented yet");
                     HelperResponse::Error("Tunnel setup not implemented yet".to_string())
-                },
+                }
                 ClientRequest::TeardownTunnel => {
                     // In Sprint 1, we're just implementing the basic IPC framework
                     // Actual tunnel teardown will be implemented in Sprint 2
                     debug!("Tunnel teardown not implemented yet");
                     HelperResponse::Error("Tunnel teardown not implemented yet".to_string())
-                },
+                }
             };
 
             // Send the response to the client

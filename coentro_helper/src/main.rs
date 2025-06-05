@@ -8,11 +8,11 @@ mod ipc_handler;
 mod network_manager;
 
 use clap::Parser;
-use log::{info, error, warn, debug, LevelFilter};
+use log::{debug, error, info, warn, LevelFilter};
+use shared_utils::config::{Config, ConfigManager};
 use std::path::PathBuf;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::oneshot;
-use shared_utils::config::{Config, ConfigManager};
 
 /// Command-line arguments for the helper daemon
 #[derive(Parser, Debug)]
@@ -41,14 +41,14 @@ fn is_already_running() -> bool {
         .arg("-f")
         .arg("coentro_helper")
         .output();
-    
+
     match output {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let pids: Vec<&str> = stdout.trim().split('\n').collect();
             // If there's more than one PID (including our own), another instance is running
             pids.len() > 1
-        },
+        }
         Err(_) => false,
     }
 }
@@ -57,7 +57,7 @@ fn is_already_running() -> bool {
 async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
-    
+
     // Check if another instance is already running
     if is_already_running() {
         eprintln!("Another instance of the helper daemon is already running. Exiting.");
@@ -90,16 +90,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Load configuration
-    info!("Attempting to load configuration from {}", args.config.display());
+    info!(
+        "Attempting to load configuration from {}",
+        args.config.display()
+    );
     let config_result = Config::load(&args.config);
     let allowed_uids = match config_result {
         Ok(config) => {
             info!("Loaded configuration from {}", args.config.display());
             info!("Allowed UIDs: {:?}", config.helper.allowed_uids);
             config.helper.allowed_uids
-        },
+        }
         Err(e) => {
-            warn!("Failed to load configuration from {}: {}", args.config.display(), e);
+            warn!(
+                "Failed to load configuration from {}: {}",
+                args.config.display(),
+                e
+            );
             warn!("Using default configuration");
             Vec::new()
         }
@@ -112,7 +119,10 @@ async fn main() -> anyhow::Result<()> {
     let ipc_handler = ipc_handler::IpcHandler::new();
     let socket_path = args.socket_path.clone();
     let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc_handler.run(socket_path, shutdown_rx, allowed_uids).await {
+        if let Err(e) = ipc_handler
+            .run(socket_path, shutdown_rx, allowed_uids)
+            .await
+        {
             error!("Error running IPC handler: {}", e);
         }
     });

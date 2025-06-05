@@ -46,10 +46,10 @@ pub enum NetworkError {
 pub struct TunConfig {
     /// Name of the interface (may be ignored on some platforms)
     pub name: Option<String>,
-    
+
     /// IP address and prefix length (e.g., "10.0.0.1/24")
     pub ip_config: String,
-    
+
     /// MTU value
     pub mtu: u32,
 }
@@ -59,13 +59,13 @@ pub struct TunConfig {
 pub struct TunDetails {
     /// Name of the created interface
     pub name: String,
-    
+
     /// Assigned IP address and prefix length
     pub ip_config: String,
-    
+
     /// Assigned MTU value
     pub mtu: u32,
-    
+
     /// File descriptor for the TUN device (platform-specific)
     pub fd: i32,
 }
@@ -75,19 +75,29 @@ pub struct TunDetails {
 pub trait NetworkManager: Send + Sync {
     /// Create a TUN interface
     async fn create_tun(&self, config: TunConfig) -> NetworkResult<TunDetails>;
-    
+
     /// Destroy a TUN interface
     async fn destroy_tun(&self, name: &str) -> NetworkResult<()>;
-    
+
     /// Add a route to the routing table
-    async fn add_route(&self, destination: &str, gateway: Option<&str>, interface: &str) -> NetworkResult<()>;
-    
+    async fn add_route(
+        &self,
+        destination: &str,
+        gateway: Option<&str>,
+        interface: &str,
+    ) -> NetworkResult<()>;
+
     /// Remove a route from the routing table
-    async fn remove_route(&self, destination: &str, gateway: Option<&str>, interface: &str) -> NetworkResult<()>;
-    
+    async fn remove_route(
+        &self,
+        destination: &str,
+        gateway: Option<&str>,
+        interface: &str,
+    ) -> NetworkResult<()>;
+
     /// Configure DNS servers
     async fn configure_dns(&self, servers: &[String]) -> NetworkResult<()>;
-    
+
     /// Restore original DNS configuration
     async fn restore_dns(&self) -> NetworkResult<()>;
 }
@@ -110,27 +120,37 @@ impl NetworkManager for LinuxNetworkManager {
         // This will be implemented in Sprint 2
         Err(NetworkError::Other("Not implemented yet".to_string()))
     }
-    
+
     async fn destroy_tun(&self, _name: &str) -> NetworkResult<()> {
         // This will be implemented in Sprint 2
         Err(NetworkError::Other("Not implemented yet".to_string()))
     }
-    
-    async fn add_route(&self, _destination: &str, _gateway: Option<&str>, _interface: &str) -> NetworkResult<()> {
+
+    async fn add_route(
+        &self,
+        _destination: &str,
+        _gateway: Option<&str>,
+        _interface: &str,
+    ) -> NetworkResult<()> {
         // This will be implemented in Sprint 2
         Err(NetworkError::Other("Not implemented yet".to_string()))
     }
-    
-    async fn remove_route(&self, _destination: &str, _gateway: Option<&str>, _interface: &str) -> NetworkResult<()> {
+
+    async fn remove_route(
+        &self,
+        _destination: &str,
+        _gateway: Option<&str>,
+        _interface: &str,
+    ) -> NetworkResult<()> {
         // This will be implemented in Sprint 2
         Err(NetworkError::Other("Not implemented yet".to_string()))
     }
-    
+
     async fn configure_dns(&self, _servers: &[String]) -> NetworkResult<()> {
         // This will be implemented in Sprint 2
         Err(NetworkError::Other("Not implemented yet".to_string()))
     }
-    
+
     async fn restore_dns(&self) -> NetworkResult<()> {
         // This will be implemented in Sprint 2
         Err(NetworkError::Other("Not implemented yet".to_string()))
@@ -138,7 +158,7 @@ impl NetworkManager for LinuxNetworkManager {
 }
 
 /// Create a platform-specific network manager
-/// 
+///
 /// For Sprint 1, we're just returning a concrete type instead of a trait object
 /// since async traits are not yet fully supported for trait objects.
 /// This will be refactored in a future sprint.
