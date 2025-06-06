@@ -18,6 +18,13 @@ RUN apt-get update && apt-get install -y \
     iptables \
     sudo \
     file \
+    tcpdump \
+    traceroute \
+    dnsutils \
+    netcat-openbsd \
+    nmap \
+    bridge-utils \
+    ethtool \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
@@ -34,6 +41,9 @@ RUN cargo build --bin coentro_helper
 RUN ls -la ./target/debug/coentro_helper && \
     file ./target/debug/coentro_helper
 
+# Create the coentrovpn group
+RUN groupadd -r coentrovpn
+
 # Create directory for the Unix Domain Socket
 RUN mkdir -p /var/run/coentrovpn && chmod 777 /var/run/coentrovpn
 
@@ -41,4 +51,4 @@ RUN mkdir -p /var/run/coentrovpn && chmod 777 /var/run/coentrovpn
 ENTRYPOINT ["./target/debug/coentro_helper"]
 
 # Default command (can be overridden)
-CMD ["--verbose"]
+CMD ["--log-level", "debug"]

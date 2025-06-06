@@ -16,12 +16,17 @@ use tun::{Configuration, Device, Layer};
 pub struct LinuxNetworkManager {
     /// Original DNS configuration, saved for restoration
     original_dns: Option<Vec<String>>,
+    /// TUN device name, used to track the active TUN device
+    tun_name: Option<String>,
 }
 
 impl LinuxNetworkManager {
     /// Create a new Linux Network Manager
     pub fn new() -> Self {
-        Self { original_dns: None }
+        Self { 
+            original_dns: None,
+            tun_name: None,
+        }
     }
 
     /// Run a system command and return the output
@@ -113,6 +118,17 @@ impl NetworkManager for LinuxNetworkManager {
         let fd = device.as_raw_fd();
         debug!("TUN device file descriptor: {}", fd);
 
+        // Store the TUN device name
+        let this = self as *const _ as *mut Self;
+        unsafe {
+            (*this).tun_name = Some(name.clone());
+        }
+        
+        // We need to leak the device to prevent it from being dropped
+        // This is a memory leak, but it's acceptable in this context
+        // since we only create one TUN device per process
+        std::mem::forget(device);
+
         // Configure the IP address
         let ip_cmd = format!("{}/{}", ip, prefix_len);
         self.run_command("ip", &["addr", "add", &ip_cmd, "dev", &name])
@@ -127,6 +143,8 @@ impl NetworkManager for LinuxNetworkManager {
             .map_err(|e| {
                 NetworkError::SystemCommand(format!("Failed to bring interface up: {}", e))
             })?;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
 
         // Return the TUN details
         Ok(TunDetails {
@@ -140,20 +158,58 @@ impl NetworkManager for LinuxNetworkManager {
     async fn destroy_tun(&self, name: &str) -> NetworkResult<()> {
         info!("Destroying TUN interface: {}", name);
 
-        // Bring the interface down
-        self.run_command("ip", &["link", "set", "dev", name, "down"])
-            .await
-            .map_err(|e| {
-                NetworkError::SystemCommand(format!("Failed to bring interface down: {}", e))
-            })?;
+        // Check if the interface exists
+        let exists = match self.run_command("ip", &["link", "show", "dev", name]).await {
+            Ok(_) => {
+                info!("TUN interface {} exists, proceeding with cleanup", name);
+                true
+            }
+            Err(e) => {
+                info!("TUN interface {} does not exist or cannot be accessed: {}", name, e);
+                false
+            }
+        };
 
-        // Delete the interface
-        self.run_command("ip", &["link", "delete", "dev", name])
-            .await
-            .map_err(|e| {
-                NetworkError::SystemCommand(format!("Failed to delete interface: {}", e))
-            })?;
+        if exists {
+            // Bring the interface down
+            info!("Bringing down TUN interface: {}", name);
+            match self.run_command("ip", &["link", "set", "dev", name, "down"]).await {
+                Ok(_) => info!("Successfully brought down TUN interface: {}", name),
+                Err(e) => {
+                    error!("Failed to bring down TUN interface {}: {}", name, e);
+                    // Continue with deletion even if bringing down fails
+                }
+            }
 
+            // Delete the interface
+            info!("Deleting TUN interface: {}", name);
+            match self.run_command("ip", &["link", "delete", "dev", name]).await {
+                Ok(_) => info!("Successfully deleted TUN interface: {}", name),
+                Err(e) => {
+                    error!("Failed to delete TUN interface {}: {}", name, e);
+                    // Try a different approach if the first one fails
+                    info!("Attempting alternative method to delete TUN interface: {}", name);
+                    match self.run_command("ip", &["tuntap", "del", "dev", name, "mode", "tun"]).await {
+                        Ok(_) => info!("Successfully deleted TUN interface using alternative method: {}", name),
+                        Err(e2) => {
+                            error!("Failed to delete TUN interface {} using alternative method: {}", name, e2);
+                            return Err(NetworkError::SystemCommand(format!(
+                                "Failed to delete interface: {} (alternative method: {})",
+                                e, e2
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clear the TUN device name
+        let this = self as *const _ as *mut Self;
+        unsafe {
+            (*this).tun_name = None;
+        }
+
+        info!("TUN interface cleanup completed for: {}", name);
         Ok(())
     }
 
@@ -168,6 +224,23 @@ impl NetworkManager for LinuxNetworkManager {
             destination, gateway, interface
         );
 
+        // First, verify that the interface exists
+        let output = self.run_command("ip", &["link", "show", interface])
+            .await
+            .map_err(|e| {
+                NetworkError::Routing(format!("Failed to verify interface exists: {}", e))
+            })?;
+
+        if output.is_empty() {
+            return Err(NetworkError::Routing(format!(
+                "Interface {} does not exist",
+                interface
+            )));
+        }
+
+        // Add a small delay to ensure the interface is fully ready
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
         let mut args = vec!["route", "add", destination];
 
         if let Some(gw) = gateway {
@@ -178,9 +251,19 @@ impl NetworkManager for LinuxNetworkManager {
         args.push("dev");
         args.push(interface);
 
-        self.run_command("ip", &args).await.map_err(|e| {
-            NetworkError::Routing(format!("Failed to add route: {}", e))
-        })?;
+        // Try to add the route, but don't fail if it already exists
+        match self.run_command("ip", &args).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Check if the error is "File exists", which means the route already exists
+                if e.to_string().contains("File exists") {
+                    info!("Route already exists, considering it a success");
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }?;
 
         Ok(())
     }

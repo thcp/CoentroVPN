@@ -34,8 +34,9 @@ RUN cargo build --bin coentro_client
 RUN ls -la ./target/debug/coentro_client && \
     file ./target/debug/coentro_client
 
-# Create a non-root user to run the client
-RUN useradd -m -s /bin/bash coentro_user
+# Create the coentrovpn group and a non-root user to run the client
+RUN groupadd -r coentrovpn && \
+    useradd -m -s /bin/bash -G coentrovpn coentro_user
 
 # Configure sudo to allow coentro_user to run sudo without a password
 RUN echo "coentro_user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/coentro_user

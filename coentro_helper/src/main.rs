@@ -111,6 +111,11 @@ async fn main() -> anyhow::Result<()> {
             Vec::new()
         }
     };
+    
+    // For now, we'll use an empty vector for allowed_gids
+    // This will be updated in a future PR when the shared_utils crate is updated
+    let allowed_gids = Some(Vec::new());
+    info!("Group-based authentication enabled with empty allowed_gids list");
 
     // Create a channel for shutdown signaling
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -120,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
     let socket_path = args.socket_path.clone();
     let ipc_handle = tokio::spawn(async move {
         if let Err(e) = ipc_handler
-            .run(socket_path, shutdown_rx, allowed_uids)
+            .run(socket_path, shutdown_rx, allowed_uids, allowed_gids)
             .await
         {
             error!("Error running IPC handler: {}", e);

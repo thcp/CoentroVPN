@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, Mutex};
 const MAX_PACKET_SIZE: usize = 1500;
 
 /// TUN interface handler
+#[allow(dead_code)]
 pub struct TunHandler {
     /// TUN interface file descriptor
     tun_fd: RawFd,
@@ -44,16 +45,19 @@ impl TunHandler {
     }
 
     /// Get the TUN interface name
+    #[allow(dead_code)]
     pub fn interface_name(&self) -> &str {
         &self.interface_name
     }
 
     /// Get the TUN interface IP configuration
+    #[allow(dead_code)]
     pub fn ip_config(&self) -> &str {
         &self.ip_config
     }
 
     /// Get the TUN interface MTU
+    #[allow(dead_code)]
     pub fn mtu(&self) -> u32 {
         self.mtu
     }

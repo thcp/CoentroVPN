@@ -11,6 +11,29 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use crate::network_manager::{create_network_manager, NetworkManager, TunConfig};
 
+/// Get the group ID (GID) for a given group name
+/// Returns None if the group doesn't exist
+fn get_group_id(group_name: &str) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        // Try to get the group entry
+        unsafe {
+            let group_entry = libc::getgrnam(std::ffi::CString::new(group_name).ok()?.as_ptr());
+            if group_entry.is_null() {
+                return None;
+            }
+            Some((*group_entry).gr_gid)
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix platforms, just return None
+        let _ = group_name; // Suppress unused variable warning
+        None
+    }
+}
+
 /// IPC Handler for the helper daemon
 pub struct IpcHandler {
     /// Active client connections
@@ -50,6 +73,7 @@ impl IpcHandler {
         socket_path: P,
         mut shutdown_rx: oneshot::Receiver<()>,
         allowed_uids: Vec<u32>,
+        allowed_gids: Option<Vec<u32>>,
     ) -> anyhow::Result<()> {
         // Ensure the socket directory exists with correct permissions
         if let Some(parent) = socket_path.as_ref().parent() {
@@ -97,11 +121,72 @@ impl IpcHandler {
             auth_config = auth_config.allow_uid(uid);
         }
 
+        // Get the current user's GID
+        let current_gid = unsafe { libc::getgid() };
+        info!("Helper daemon running with GID={}", current_gid);
+
+        // If SUDO_GID is set, allow the original user's group
+        if let Ok(gid) = std::env::var("SUDO_GID") {
+            if let Ok(gid) = gid.parse::<u32>() {
+                info!("Allowing GID {} (from SUDO_GID)", gid);
+                auth_config = auth_config.allow_gid(gid);
+            }
+        } else {
+            // If not running with sudo, allow the current user's group
+            info!("Allowing current GID {} (not running with sudo)", current_gid);
+            auth_config = auth_config.allow_gid(current_gid);
+        }
+
+        // Allow GIDs from configuration
+        if let Some(gids) = allowed_gids {
+            for gid in gids {
+                info!("Allowing GID {} (from configuration)", gid);
+                auth_config = auth_config.allow_gid(gid);
+            }
+        }
+
+        // Try to create a dedicated group for the socket
+        // This is a common group name for VPN-related operations
+        let vpn_group_name = "coentrovpn";
+        let vpn_group_gid = match get_group_id(vpn_group_name) {
+            Some(gid) => {
+                info!("Found existing group '{}' with GID={}", vpn_group_name, gid);
+                auth_config = auth_config.allow_gid(gid);
+                Some(gid)
+            }
+            None => {
+                info!("Group '{}' not found, socket will use default group", vpn_group_name);
+                None
+            }
+        };
+
         // Create the Unix Domain Socket listener with authentication
-        info!("Creating socket with permissions 600 (rw-------) at {}", socket_path.as_ref().display());
+        info!("Creating socket with permissions 660 (rw-rw----) at {}", socket_path.as_ref().display());
         let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind to socket: {}", e))?;
+
+        // Set socket permissions to 660 (rw-rw----)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(socket_path.as_ref())
+                .map_err(|e| anyhow::anyhow!("Failed to get socket metadata: {}", e))?;
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o660); // rw-rw----
+            std::fs::set_permissions(socket_path.as_ref(), permissions)
+                .map_err(|e| anyhow::anyhow!("Failed to set socket permissions: {}", e))?;
+        }
+
+        // If we found a dedicated VPN group, set the socket's group ownership
+        #[cfg(unix)]
+        if let Some(gid) = vpn_group_gid {
+            use std::os::unix::fs::chown;
+            info!("Setting socket group ownership to GID={} ({})", gid, vpn_group_name);
+            if let Err(e) = chown(socket_path.as_ref(), None, Some(gid)) {
+                warn!("Failed to set socket group ownership: {}", e);
+            }
+        }
 
         info!(
             "IPC handler listening on {}",
@@ -172,7 +257,36 @@ impl IpcHandler {
 
                 // Handle client task completion
                 Some(client_id) = client_done_rx.recv() => {
-                    debug!("Client ID={} task completed", client_id);
+                    info!("Client ID={} task completed, checking for cleanup", client_id);
+
+                    // Check if the client had an active tunnel
+                    let client_state = {
+                        let active_clients = self.active_clients.lock().unwrap();
+                        active_clients.get(&client_id).cloned()
+                    };
+
+                    if let Some(state) = client_state {
+                        if state.tunnel_active {
+                            if let Some(interface_name) = &state.active_interface {
+                                info!("Client ID={} disconnected with active tunnel on interface {}, performing automatic cleanup", client_id, interface_name);
+                                
+                                // Create a network manager
+                                let network_manager = create_network_manager();
+                                
+                                // Attempt to destroy the TUN interface
+                                match network_manager.destroy_tun(interface_name).await {
+                                    Ok(()) => info!("Successfully cleaned up TUN interface {} for disconnected client ID={}", interface_name, client_id),
+                                    Err(e) => error!("Failed to clean up TUN interface {} for disconnected client ID={}: {}", interface_name, client_id, e),
+                                }
+                            } else {
+                                warn!("Client ID={} had active tunnel but no interface name", client_id);
+                            }
+                        } else {
+                            debug!("Client ID={} had no active tunnel, no cleanup needed", client_id);
+                        }
+                    } else {
+                        warn!("Client ID={} state not found", client_id);
+                    }
 
                     // Remove the client state
                     {

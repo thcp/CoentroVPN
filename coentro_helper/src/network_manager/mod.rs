@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use thiserror::Error;
-use std::os::unix::io::AsRawFd;
 
 // Import the Linux implementation
 mod linux;

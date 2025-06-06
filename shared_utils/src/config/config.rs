@@ -165,6 +165,10 @@ pub struct HelperConfig {
     /// List of user IDs allowed to connect to the helper daemon
     #[serde(default)]
     pub allowed_uids: Vec<u32>,
+    
+    /// List of group IDs allowed to connect to the helper daemon
+    #[serde(default)]
+    pub allowed_gids: Vec<u32>,
 }
 
 /// Main configuration structure for CoentroVPN.

@@ -1,0 +1,31 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Version control
+.git/
+.github/
+.gitignore
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+shared_utils/logs/
+shared_utils/app.log
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Other unnecessary files for Docker build
+.test_notes/
