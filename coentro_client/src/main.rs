@@ -7,12 +7,12 @@
 mod helper_comms;
 mod tun_handler;
 
+use crate::tun_handler::{start_tun_quic_tunnel, PassThroughProcessor, TunHandler};
 use clap::{Parser, Subcommand};
 use log::{debug, error, info, LevelFilter};
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::tun_handler::{PassThroughProcessor, TunHandler, start_tun_quic_tunnel};
 
 /// Command-line arguments for the client
 #[derive(Parser, Debug)]
@@ -128,19 +128,31 @@ async fn main() -> anyhow::Result<()> {
 
     // Process the subcommand
     match args.command {
-        Some(Command::SetupTunnel { ip, routes, dns, mtu, server, cert, key, ca }) => {
+        Some(Command::SetupTunnel {
+            ip,
+            routes,
+            dns,
+            mtu,
+            server,
+            cert,
+            key,
+            ca,
+        }) => {
             // Ignoring cert, key, ca as they're not used in this implementation
             let _ = (cert, key, ca);
             info!("Setting up VPN tunnel...");
-            
+
             // Generate a unique client ID
             let client_id = Uuid::new_v4().to_string();
-            
+
             // Default routes if none specified
             let routes = routes.unwrap_or_else(|| vec!["0.0.0.0/0".to_string()]);
-            
+
             // Set up the tunnel
-            let tunnel_details = match helper_client.setup_tunnel(&client_id, ip, routes, dns, mtu).await {
+            let tunnel_details = match helper_client
+                .setup_tunnel(&client_id, ip, routes, dns, mtu)
+                .await
+            {
                 Ok(details) => {
                     info!("Tunnel setup successful:");
                     info!("  Interface: {}", details.interface_name);
@@ -153,17 +165,17 @@ async fn main() -> anyhow::Result<()> {
                     return Err(anyhow::anyhow!("Failed to set up tunnel: {}", e));
                 }
             };
-            
+
             // If a server address is provided, establish a QUIC connection
             if let Some(server_addr) = server {
                 info!("Connecting to QUIC server at {}", server_addr);
-                
+
                 // For now, we'll just use a mock connection since we're not actually implementing
                 // the full QUIC client functionality in this PR
                 let (quic_stream_rx, quic_stream_tx) = (tokio::io::empty(), tokio::io::sink());
-                
+
                 info!("QUIC connection established, starting tunnel...");
-                
+
                 // Create a TUN handler
                 // Note: In a real implementation, we would use the file descriptor from the helper daemon
                 // For now, we'll create a mock TUN device for testing purposes
@@ -174,10 +186,10 @@ async fn main() -> anyhow::Result<()> {
                     tunnel_details.assigned_ip,
                     tunnel_details.assigned_mtu,
                 );
-                
+
                 // Create a packet processor
                 let processor = Arc::new(PassThroughProcessor);
-                
+
                 // Start the TUN-QUIC tunnel
                 let tunnel_task = tokio::spawn(async move {
                     if let Err(e) = start_tun_quic_tunnel(
@@ -186,49 +198,51 @@ async fn main() -> anyhow::Result<()> {
                         quic_stream_tx,
                         processor,
                         100, // Buffer size
-                    ).await {
+                    )
+                    .await
+                    {
                         error!("Tunnel error: {}", e);
                     }
                 });
-                
+
                 info!("Tunnel is active. Press Ctrl+C to tear down the tunnel and exit.");
-                
+
                 // Wait for Ctrl+C
                 tokio::signal::ctrl_c().await?;
-                
+
                 info!("Received Ctrl+C, tearing down tunnel...");
-                
+
                 // Abort the tunnel task
                 tunnel_task.abort();
-                
+
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
                     error!("Failed to tear down tunnel: {}", e);
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
-                
+
                 info!("Tunnel torn down successfully.");
             } else {
                 info!("No server address provided, tunnel is ready for local testing.");
                 info!("Press Ctrl+C to tear down the tunnel and exit.");
-                
+
                 // Wait for Ctrl+C
                 tokio::signal::ctrl_c().await?;
-                
+
                 info!("Received Ctrl+C, tearing down tunnel...");
-                
+
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
                     error!("Failed to tear down tunnel: {}", e);
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
-                
+
                 info!("Tunnel torn down successfully.");
             }
         }
         Some(Command::TeardownTunnel) => {
             info!("Tearing down VPN tunnel...");
-            
+
             match helper_client.teardown_tunnel().await {
                 Ok(()) => {
                     info!("Tunnel torn down successfully.");
@@ -258,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
                     return Err(anyhow::anyhow!("Failed to get helper daemon status: {}", e));
                 }
             }
-            
+
             info!("No command specified. Use --help to see available commands.");
         }
     }

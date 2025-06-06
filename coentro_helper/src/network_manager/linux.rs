@@ -23,7 +23,7 @@ pub struct LinuxNetworkManager {
 impl LinuxNetworkManager {
     /// Create a new Linux Network Manager
     pub fn new() -> Self {
-        Self { 
+        Self {
             original_dns: None,
             tun_name: None,
         }
@@ -37,7 +37,9 @@ impl LinuxNetworkManager {
             .args(args)
             .output()
             .await
-            .map_err(|e| NetworkError::SystemCommand(format!("Failed to execute command: {}", e)))?;
+            .map_err(|e| {
+                NetworkError::SystemCommand(format!("Failed to execute command: {}", e))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -64,9 +66,8 @@ impl LinuxNetworkManager {
             )));
         }
 
-        let ip = Ipv4Addr::from_str(parts[0]).map_err(|e| {
-            NetworkError::Other(format!("Invalid IP address {}: {}", parts[0], e))
-        })?;
+        let ip = Ipv4Addr::from_str(parts[0])
+            .map_err(|e| NetworkError::Other(format!("Invalid IP address {}: {}", parts[0], e)))?;
 
         let prefix_len = parts[1].parse::<u8>().map_err(|e| {
             NetworkError::Other(format!("Invalid prefix length {}: {}", parts[1], e))
@@ -106,9 +107,8 @@ impl NetworkManager for LinuxNetworkManager {
         tun_config.mtu(config.mtu as i32);
 
         // Create the TUN device
-        let device = tun::create(&tun_config).map_err(|e| {
-            NetworkError::TunDevice(format!("Failed to create TUN device: {}", e))
-        })?;
+        let device = tun::create(&tun_config)
+            .map_err(|e| NetworkError::TunDevice(format!("Failed to create TUN device: {}", e)))?;
 
         // Get the name of the created device
         let name = device.name().to_string();
@@ -123,7 +123,7 @@ impl NetworkManager for LinuxNetworkManager {
         unsafe {
             (*this).tun_name = Some(name.clone());
         }
-        
+
         // We need to leak the device to prevent it from being dropped
         // This is a memory leak, but it's acceptable in this context
         // since we only create one TUN device per process
@@ -133,9 +133,7 @@ impl NetworkManager for LinuxNetworkManager {
         let ip_cmd = format!("{}/{}", ip, prefix_len);
         self.run_command("ip", &["addr", "add", &ip_cmd, "dev", &name])
             .await
-            .map_err(|e| {
-                NetworkError::SystemCommand(format!("Failed to set IP address: {}", e))
-            })?;
+            .map_err(|e| NetworkError::SystemCommand(format!("Failed to set IP address: {}", e)))?;
 
         // Bring the interface up
         self.run_command("ip", &["link", "set", "dev", &name, "up"])
@@ -144,7 +142,6 @@ impl NetworkManager for LinuxNetworkManager {
                 NetworkError::SystemCommand(format!("Failed to bring interface up: {}", e))
             })?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
 
         // Return the TUN details
         Ok(TunDetails {
@@ -165,7 +162,10 @@ impl NetworkManager for LinuxNetworkManager {
                 true
             }
             Err(e) => {
-                info!("TUN interface {} does not exist or cannot be accessed: {}", name, e);
+                info!(
+                    "TUN interface {} does not exist or cannot be accessed: {}",
+                    name, e
+                );
                 false
             }
         };
@@ -173,7 +173,10 @@ impl NetworkManager for LinuxNetworkManager {
         if exists {
             // Bring the interface down
             info!("Bringing down TUN interface: {}", name);
-            match self.run_command("ip", &["link", "set", "dev", name, "down"]).await {
+            match self
+                .run_command("ip", &["link", "set", "dev", name, "down"])
+                .await
+            {
                 Ok(_) => info!("Successfully brought down TUN interface: {}", name),
                 Err(e) => {
                     error!("Failed to bring down TUN interface {}: {}", name, e);
@@ -183,16 +186,31 @@ impl NetworkManager for LinuxNetworkManager {
 
             // Delete the interface
             info!("Deleting TUN interface: {}", name);
-            match self.run_command("ip", &["link", "delete", "dev", name]).await {
+            match self
+                .run_command("ip", &["link", "delete", "dev", name])
+                .await
+            {
                 Ok(_) => info!("Successfully deleted TUN interface: {}", name),
                 Err(e) => {
                     error!("Failed to delete TUN interface {}: {}", name, e);
                     // Try a different approach if the first one fails
-                    info!("Attempting alternative method to delete TUN interface: {}", name);
-                    match self.run_command("ip", &["tuntap", "del", "dev", name, "mode", "tun"]).await {
-                        Ok(_) => info!("Successfully deleted TUN interface using alternative method: {}", name),
+                    info!(
+                        "Attempting alternative method to delete TUN interface: {}",
+                        name
+                    );
+                    match self
+                        .run_command("ip", &["tuntap", "del", "dev", name, "mode", "tun"])
+                        .await
+                    {
+                        Ok(_) => info!(
+                            "Successfully deleted TUN interface using alternative method: {}",
+                            name
+                        ),
                         Err(e2) => {
-                            error!("Failed to delete TUN interface {} using alternative method: {}", name, e2);
+                            error!(
+                                "Failed to delete TUN interface {} using alternative method: {}",
+                                name, e2
+                            );
                             return Err(NetworkError::SystemCommand(format!(
                                 "Failed to delete interface: {} (alternative method: {})",
                                 e, e2
@@ -225,7 +243,8 @@ impl NetworkManager for LinuxNetworkManager {
         );
 
         // First, verify that the interface exists
-        let output = self.run_command("ip", &["link", "show", interface])
+        let output = self
+            .run_command("ip", &["link", "show", interface])
             .await
             .map_err(|e| {
                 NetworkError::Routing(format!("Failed to verify interface exists: {}", e))
@@ -289,9 +308,9 @@ impl NetworkManager for LinuxNetworkManager {
         args.push("dev");
         args.push(interface);
 
-        self.run_command("ip", &args).await.map_err(|e| {
-            NetworkError::Routing(format!("Failed to remove route: {}", e))
-        })?;
+        self.run_command("ip", &args)
+            .await
+            .map_err(|e| NetworkError::Routing(format!("Failed to remove route: {}", e)))?;
 
         Ok(())
     }

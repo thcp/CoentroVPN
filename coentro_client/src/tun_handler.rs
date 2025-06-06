@@ -63,7 +63,10 @@ impl TunHandler {
     }
 
     /// Create packet channels for communication with the QUIC tunnel
-    pub fn create_packet_channels(&mut self, buffer_size: usize) -> (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
+    pub fn create_packet_channels(
+        &mut self,
+        buffer_size: usize,
+    ) -> (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
         // Create channels for packets
         let (tun_to_quic_tx, tun_to_quic_rx) = mpsc::channel(buffer_size);
         let (quic_to_tun_tx, quic_to_tun_rx) = mpsc::channel(buffer_size);
@@ -80,8 +83,7 @@ impl TunHandler {
     pub async fn start_processing(&mut self) -> io::Result<()> {
         // Make sure we have channels
         if self.packet_tx.is_none() || self.packet_rx.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Packet channels not created",
             ));
         }
@@ -224,7 +226,10 @@ pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
             debug!("Read {} bytes from QUIC stream", packet_len);
 
             // Process the packet
-            let processed_packet = match processor_clone.process_quic_to_tun(&buffer[..packet_len]).await {
+            let processed_packet = match processor_clone
+                .process_quic_to_tun(&buffer[..packet_len])
+                .await
+            {
                 Ok(packet) => packet,
                 Err(e) => {
                     error!("Error processing packet from QUIC to TUN: {}", e);

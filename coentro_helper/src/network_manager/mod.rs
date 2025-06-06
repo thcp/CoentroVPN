@@ -119,7 +119,6 @@ pub trait NetworkManager: Send + Sync {
     async fn restore_dns(&self) -> NetworkResult<()>;
 }
 
-
 /// Create a platform-specific network manager
 ///
 /// This function detects the platform and returns the appropriate implementation.

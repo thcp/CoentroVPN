@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
             Vec::new()
         }
     };
-    
+
     // For now, we'll use an empty vector for allowed_gids
     // This will be updated in a future PR when the shared_utils crate is updated
     let allowed_gids = Some(Vec::new());

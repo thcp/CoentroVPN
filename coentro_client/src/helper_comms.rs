@@ -2,7 +2,9 @@
 //!
 //! This module handles communication with the helper daemon via IPC.
 
-use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest};
+use coentro_ipc::messages::{
+    ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest,
+};
 use coentro_ipc::transport::{IpcTransport, UnixSocketTransport};
 use log::{debug, error, info};
 use std::path::Path;
@@ -133,7 +135,10 @@ impl HelperClient {
             mtu,
         };
 
-        info!("Sending tunnel setup request to helper daemon: {:?}", request);
+        info!(
+            "Sending tunnel setup request to helper daemon: {:?}",
+            request
+        );
         transport
             .send_request(&ClientRequest::SetupTunnel(request))
             .await
@@ -154,7 +159,10 @@ impl HelperClient {
                 Err(anyhow::anyhow!("Helper daemon error: {}", msg))
             }
             _ => {
-                error!("Unexpected response to tunnel setup request: {:?}", response);
+                error!(
+                    "Unexpected response to tunnel setup request: {:?}",
+                    response
+                );
                 Err(anyhow::anyhow!(
                     "Unexpected response to tunnel setup request: {:?}",
                     response
@@ -188,7 +196,10 @@ impl HelperClient {
                 Err(anyhow::anyhow!("Helper daemon error: {}", msg))
             }
             _ => {
-                error!("Unexpected response to tunnel teardown request: {:?}", response);
+                error!(
+                    "Unexpected response to tunnel teardown request: {:?}",
+                    response
+                );
                 Err(anyhow::anyhow!(
                     "Unexpected response to tunnel teardown request: {:?}",
                     response

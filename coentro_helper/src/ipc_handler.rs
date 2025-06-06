@@ -2,14 +2,16 @@
 //!
 //! This module handles IPC connections and requests from the client.
 
-use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest};
+use crate::network_manager::{create_network_manager, NetworkManager, TunConfig};
+use coentro_ipc::messages::{
+    ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest,
+};
 use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use crate::network_manager::{create_network_manager, NetworkManager, TunConfig};
 
 /// Get the group ID (GID) for a given group name
 /// Returns None if the group doesn't exist
@@ -81,7 +83,7 @@ impl IpcHandler {
                 info!("Creating socket directory: {}", parent.display());
                 std::fs::create_dir_all(parent)
                     .map_err(|e| anyhow::anyhow!("Failed to create socket directory: {}", e))?;
-                
+
                 // Set directory permissions to 755 (rwxr-xr-x)
                 #[cfg(unix)]
                 {
@@ -90,8 +92,9 @@ impl IpcHandler {
                         .map_err(|e| anyhow::anyhow!("Failed to get directory metadata: {}", e))?;
                     let mut permissions = metadata.permissions();
                     permissions.set_mode(0o755); // rwxr-xr-x
-                    std::fs::set_permissions(parent, permissions)
-                        .map_err(|e| anyhow::anyhow!("Failed to set directory permissions: {}", e))?;
+                    std::fs::set_permissions(parent, permissions).map_err(|e| {
+                        anyhow::anyhow!("Failed to set directory permissions: {}", e)
+                    })?;
                 }
             }
         }
@@ -111,7 +114,10 @@ impl IpcHandler {
             }
         } else {
             // If not running with sudo, allow the current user
-            info!("Allowing current UID {} (not running with sudo)", current_uid);
+            info!(
+                "Allowing current UID {} (not running with sudo)",
+                current_uid
+            );
             auth_config = auth_config.allow_uid(current_uid);
         }
 
@@ -133,7 +139,10 @@ impl IpcHandler {
             }
         } else {
             // If not running with sudo, allow the current user's group
-            info!("Allowing current GID {} (not running with sudo)", current_gid);
+            info!(
+                "Allowing current GID {} (not running with sudo)",
+                current_gid
+            );
             auth_config = auth_config.allow_gid(current_gid);
         }
 
@@ -155,13 +164,19 @@ impl IpcHandler {
                 Some(gid)
             }
             None => {
-                info!("Group '{}' not found, socket will use default group", vpn_group_name);
+                info!(
+                    "Group '{}' not found, socket will use default group",
+                    vpn_group_name
+                );
                 None
             }
         };
 
         // Create the Unix Domain Socket listener with authentication
-        info!("Creating socket with permissions 660 (rw-rw----) at {}", socket_path.as_ref().display());
+        info!(
+            "Creating socket with permissions 660 (rw-rw----) at {}",
+            socket_path.as_ref().display()
+        );
         let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind to socket: {}", e))?;
@@ -182,7 +197,10 @@ impl IpcHandler {
         #[cfg(unix)]
         if let Some(gid) = vpn_group_gid {
             use std::os::unix::fs::chown;
-            info!("Setting socket group ownership to GID={} ({})", gid, vpn_group_name);
+            info!(
+                "Setting socket group ownership to GID={} ({})",
+                gid, vpn_group_name
+            );
             if let Err(e) = chown(socket_path.as_ref(), None, Some(gid)) {
                 warn!("Failed to set socket group ownership: {}", e);
             }
@@ -269,10 +287,10 @@ impl IpcHandler {
                         if state.tunnel_active {
                             if let Some(interface_name) = &state.active_interface {
                                 info!("Client ID={} disconnected with active tunnel on interface {}, performing automatic cleanup", client_id, interface_name);
-                                
+
                                 // Create a network manager
                                 let network_manager = create_network_manager();
-                                
+
                                 // Attempt to destroy the TUN interface
                                 match network_manager.destroy_tun(interface_name).await {
                                     Ok(()) => info!("Successfully cleaned up TUN interface {} for disconnected client ID={}", interface_name, client_id),
@@ -345,7 +363,9 @@ impl IpcHandler {
         // Create a TUN configuration
         let tun_config = TunConfig {
             name: Some(format!("tun{}", client_id % 10)), // Use client_id to generate a unique name
-            ip_config: setup.requested_ip_config.unwrap_or_else(|| "10.0.0.1/24".to_string()),
+            ip_config: setup
+                .requested_ip_config
+                .unwrap_or_else(|| "10.0.0.1/24".to_string()),
             mtu: setup.mtu.unwrap_or(1500),
         };
 
@@ -360,9 +380,7 @@ impl IpcHandler {
             network_manager
                 .add_route(route, None, &tun_details.name)
                 .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to add route {}: {}", route, e)
-                })?;
+                .map_err(|e| anyhow::anyhow!("Failed to add route {}: {}", route, e))?;
         }
 
         // Configure DNS if specified
@@ -518,7 +536,10 @@ impl IpcHandler {
                     debug!("Setting up tunnel for client ID={}: {:?}", client_id, setup);
                     match IpcHandler::setup_tunnel(client_id, setup, active_clients.clone()).await {
                         Ok(details) => {
-                            debug!("Tunnel setup successful for client ID={}: {:?}", client_id, details);
+                            debug!(
+                                "Tunnel setup successful for client ID={}: {:?}",
+                                client_id, details
+                            );
                             HelperResponse::TunnelReady(details)
                         }
                         Err(e) => {
@@ -535,7 +556,10 @@ impl IpcHandler {
                             HelperResponse::Success
                         }
                         Err(e) => {
-                            error!("Failed to tear down tunnel for client ID={}: {}", client_id, e);
+                            error!(
+                                "Failed to tear down tunnel for client ID={}: {}",
+                                client_id, e
+                            );
                             HelperResponse::Error(format!("Failed to tear down tunnel: {}", e))
                         }
                     }
