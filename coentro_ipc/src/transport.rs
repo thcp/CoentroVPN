@@ -230,7 +230,7 @@ impl AuthConfig {
         #[cfg(test)]
         println!("Linux is_allowed check - UID: {}, GID: {}, allowed_uids: {:?}, allowed_gids: {:?}, allow_root: {}", 
                  creds.uid(), creds.gid(), self.allowed_uids, self.allowed_gids, self.allow_root);
-        
+
         // Always allow root if configured to do so
         if self.allow_root && creds.uid() == 0 {
             #[cfg(test)]
@@ -253,21 +253,29 @@ impl AuthConfig {
         }
 
         #[cfg(test)]
-        println!("Access denied for UID: {}, GID: {}", creds.uid(), creds.gid());
-        
+        println!(
+            "Access denied for UID: {}, GID: {}",
+            creds.uid(),
+            creds.gid()
+        );
+
         false
     }
 
     /// Check if a user is allowed based on their credentials
     #[cfg(target_os = "macos")]
     pub fn is_allowed(&self, creds: &UnixCredentials) -> bool {
-        let _primary_gid = if creds.cr_ngroups > 0 { creds.cr_groups[0] } else { 0 };
-        
+        let _primary_gid = if creds.cr_ngroups > 0 {
+            creds.cr_groups[0]
+        } else {
+            0
+        };
+
         // Debug print in test mode
         #[cfg(test)]
         println!("macOS is_allowed check - UID: {}, GID: {}, allowed_uids: {:?}, allowed_gids: {:?}, allow_root: {}", 
                  creds.cr_uid, _primary_gid, self.allowed_uids, self.allowed_gids, self.allow_root);
-        
+
         // Always allow root if configured to do so
         if self.allow_root && creds.cr_uid == 0 {
             #[cfg(test)]
@@ -290,8 +298,11 @@ impl AuthConfig {
         }
 
         #[cfg(test)]
-        println!("Access denied for UID: {}, GID: {}", creds.cr_uid, _primary_gid);
-        
+        println!(
+            "Access denied for UID: {}, GID: {}",
+            creds.cr_uid, _primary_gid
+        );
+
         false
     }
 }
@@ -388,13 +399,18 @@ impl UnixSocketListener {
         let raw_fd = stream.as_raw_fd();
 
         // Use nix to get peer credentials
-        let creds = nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
-            .map_err(io::Error::other)?;
-        
+        let creds =
+            nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
+                .map_err(io::Error::other)?;
+
         // Debug print in test mode
         #[cfg(test)]
-        println!("Linux peer credentials - UID: {}, GID: {}", creds.uid(), creds.gid());
-        
+        println!(
+            "Linux peer credentials - UID: {}, GID: {}",
+            creds.uid(),
+            creds.gid()
+        );
+
         Ok(creds)
     }
 
@@ -419,14 +435,21 @@ impl UnixSocketListener {
 
             if ret == 0 {
                 let creds = xucred.assume_init();
-                
+
                 // Debug print in test mode
                 #[cfg(test)]
                 {
-                    let gid = if creds.cr_ngroups > 0 { creds.cr_groups[0] } else { 0 };
-                    println!("macOS peer credentials - UID: {}, GID: {}", creds.cr_uid, gid);
+                    let gid = if creds.cr_ngroups > 0 {
+                        creds.cr_groups[0]
+                    } else {
+                        0
+                    };
+                    println!(
+                        "macOS peer credentials - UID: {}, GID: {}",
+                        creds.cr_uid, gid
+                    );
                 }
-                
+
                 Ok(creds)
             } else {
                 Err(io::Error::last_os_error())
@@ -702,11 +725,11 @@ mod tests {
                 // Create an auth config that only allows a specific UID that's not the current user
                 let current_uid = unsafe { libc::getuid() };
                 println!("Server thread UID: {}", current_uid);
-                
+
                 // Use a UID that's definitely not the current user
                 let disallowed_uid = if current_uid == 12345 { 12346 } else { 12345 };
                 println!("Using disallowed UID: {}", disallowed_uid);
-                
+
                 let auth_config = AuthConfig::new()
                     .allow_uid(disallowed_uid) // Some UID that's not the current user
                     .allow_root(false); // Don't allow root
@@ -728,18 +751,18 @@ mod tests {
                     Ok(conn) => {
                         #[cfg(target_os = "linux")]
                         println!(
-                            "Unexpected authentication success. Peer UID: {}, GID: {}", 
-                            conn.peer_uid(), 
+                            "Unexpected authentication success. Peer UID: {}, GID: {}",
+                            conn.peer_uid(),
                             conn.peer_gid()
                         );
-                        
+
                         #[cfg(target_os = "macos")]
                         println!(
-                            "Unexpected authentication success. Peer UID: {}, GID: {}", 
-                            conn.peer_uid(), 
+                            "Unexpected authentication success. Peer UID: {}, GID: {}",
+                            conn.peer_uid(),
                             conn.peer_gid()
                         );
-                        
+
                         auth_tx.send(false).unwrap(); // Signal that auth succeeded unexpectedly
                         panic!("Authentication should have failed");
                     }
