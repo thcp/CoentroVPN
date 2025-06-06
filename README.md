@@ -274,6 +274,4 @@ We use GitHub Actions for build pipelines. See `.github/workflows/ci.yml`.
 
 We welcome contributions! Please follow our contribution guidelines (coming soon) and open issues or pull requests.
 
----
 
-Maintained by the CoentroVPN team.
