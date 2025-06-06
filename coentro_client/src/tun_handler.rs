@@ -83,9 +83,7 @@ impl TunHandler {
     pub async fn start_processing(&mut self) -> io::Result<()> {
         // Make sure we have channels
         if self.packet_tx.is_none() || self.packet_rx.is_none() {
-            return Err(io::Error::other(
-                "Packet channels not created",
-            ));
+            return Err(io::Error::other("Packet channels not created"));
         }
 
         // Get the packet channels
