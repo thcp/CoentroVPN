@@ -226,42 +226,72 @@ impl AuthConfig {
     /// Check if a user is allowed based on their credentials
     #[cfg(target_os = "linux")]
     pub fn is_allowed(&self, creds: &UnixCredentials) -> bool {
+        // Debug print in test mode
+        #[cfg(test)]
+        println!("Linux is_allowed check - UID: {}, GID: {}, allowed_uids: {:?}, allowed_gids: {:?}, allow_root: {}", 
+                 creds.uid(), creds.gid(), self.allowed_uids, self.allowed_gids, self.allow_root);
+        
         // Always allow root if configured to do so
         if self.allow_root && creds.uid() == 0 {
+            #[cfg(test)]
+            println!("Root access allowed");
             return true;
         }
 
         // Check if the UID is allowed
         if self.allowed_uids.contains(&creds.uid()) {
+            #[cfg(test)]
+            println!("UID {} is allowed", creds.uid());
             return true;
         }
 
         // Check if the GID is allowed
         if self.allowed_gids.contains(&creds.gid()) {
+            #[cfg(test)]
+            println!("GID {} is allowed", creds.gid());
             return true;
         }
 
+        #[cfg(test)]
+        println!("Access denied for UID: {}, GID: {}", creds.uid(), creds.gid());
+        
         false
     }
 
     /// Check if a user is allowed based on their credentials
     #[cfg(target_os = "macos")]
     pub fn is_allowed(&self, creds: &UnixCredentials) -> bool {
+        let _primary_gid = if creds.cr_ngroups > 0 { creds.cr_groups[0] } else { 0 };
+        
+        // Debug print in test mode
+        #[cfg(test)]
+        println!("macOS is_allowed check - UID: {}, GID: {}, allowed_uids: {:?}, allowed_gids: {:?}, allow_root: {}", 
+                 creds.cr_uid, _primary_gid, self.allowed_uids, self.allowed_gids, self.allow_root);
+        
         // Always allow root if configured to do so
         if self.allow_root && creds.cr_uid == 0 {
+            #[cfg(test)]
+            println!("Root access allowed");
             return true;
         }
 
         // Check if the UID is allowed
         if self.allowed_uids.contains(&creds.cr_uid) {
+            #[cfg(test)]
+            println!("UID {} is allowed", creds.cr_uid);
             return true;
         }
 
         // Check if the GID is allowed (on macOS, cr_groups[0] is the primary group)
         if creds.cr_ngroups > 0 && self.allowed_gids.contains(&creds.cr_groups[0]) {
+            #[cfg(test)]
+            println!("GID {} is allowed", creds.cr_groups[0]);
             return true;
         }
 
+        #[cfg(test)]
+        println!("Access denied for UID: {}, GID: {}", creds.cr_uid, _primary_gid);
+        
         false
     }
 }
@@ -358,8 +388,14 @@ impl UnixSocketListener {
         let raw_fd = stream.as_raw_fd();
 
         // Use nix to get peer credentials
-        nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
-            .map_err(io::Error::other)
+        let creds = nix::sys::socket::getsockopt(raw_fd, nix::sys::socket::sockopt::PeerCredentials)
+            .map_err(io::Error::other)?;
+        
+        // Debug print in test mode
+        #[cfg(test)]
+        println!("Linux peer credentials - UID: {}, GID: {}", creds.uid(), creds.gid());
+        
+        Ok(creds)
     }
 
     /// Get the credentials of the peer connected to the given socket
@@ -382,7 +418,16 @@ impl UnixSocketListener {
             );
 
             if ret == 0 {
-                Ok(xucred.assume_init())
+                let creds = xucred.assume_init();
+                
+                // Debug print in test mode
+                #[cfg(test)]
+                {
+                    let gid = if creds.cr_ngroups > 0 { creds.cr_groups[0] } else { 0 };
+                    println!("macOS peer credentials - UID: {}, GID: {}", creds.cr_uid, gid);
+                }
+                
+                Ok(creds)
             } else {
                 Err(io::Error::last_os_error())
             }
@@ -634,6 +679,10 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let socket_path = temp_dir.join("coentro_test_auth_socket");
 
+        // Print current user info for debugging
+        println!("Current UID: {}", unsafe { libc::getuid() });
+        println!("Current GID: {}", unsafe { libc::getgid() });
+
         // Remove the socket file if it already exists
         if socket_path.exists() {
             std::fs::remove_file(&socket_path).unwrap();
@@ -641,6 +690,8 @@ mod tests {
 
         // Use a channel to signal when the server is ready
         let (tx, rx) = std::sync::mpsc::channel();
+        // Use another channel to signal when the server has processed the connection
+        let (auth_tx, auth_rx) = std::sync::mpsc::channel();
 
         // Start the server in a separate thread with restricted auth
         let socket_path_clone = socket_path.clone();
@@ -649,8 +700,15 @@ mod tests {
 
             server_runtime.block_on(async {
                 // Create an auth config that only allows a specific UID that's not the current user
+                let current_uid = unsafe { libc::getuid() };
+                println!("Server thread UID: {}", current_uid);
+                
+                // Use a UID that's definitely not the current user
+                let disallowed_uid = if current_uid == 12345 { 12346 } else { 12345 };
+                println!("Using disallowed UID: {}", disallowed_uid);
+                
                 let auth_config = AuthConfig::new()
-                    .allow_uid(12345) // Some UID that's not the current user
+                    .allow_uid(disallowed_uid) // Some UID that's not the current user
                     .allow_root(false); // Don't allow root
 
                 let listener = UnixSocketListener::bind_with_auth(&socket_path_clone, auth_config)
@@ -662,13 +720,32 @@ mod tests {
 
                 // This should fail with an authentication error since we're not using the allowed UID
                 match listener.accept().await {
-                    Err(IpcError::Authentication(_)) => {
+                    Err(IpcError::Authentication(msg)) => {
                         // This is expected
+                        println!("Authentication error as expected: {}", msg);
+                        auth_tx.send(true).unwrap(); // Signal that auth failed as expected
                     }
-                    Ok(_) => {
+                    Ok(conn) => {
+                        #[cfg(target_os = "linux")]
+                        println!(
+                            "Unexpected authentication success. Peer UID: {}, GID: {}", 
+                            conn.peer_uid(), 
+                            conn.peer_gid()
+                        );
+                        
+                        #[cfg(target_os = "macos")]
+                        println!(
+                            "Unexpected authentication success. Peer UID: {}, GID: {}", 
+                            conn.peer_uid(), 
+                            conn.peer_gid()
+                        );
+                        
+                        auth_tx.send(false).unwrap(); // Signal that auth succeeded unexpectedly
                         panic!("Authentication should have failed");
                     }
                     Err(e) => {
+                        println!("Unexpected error: {:?}", e);
+                        auth_tx.send(false).unwrap(); // Signal that there was an unexpected error
                         panic!("Unexpected error: {:?}", e);
                     }
                 }
@@ -677,6 +754,9 @@ mod tests {
 
         // Wait for the server to be ready before attempting to connect
         rx.recv().unwrap();
+
+        // Give the server a moment to set up
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Run the client - this should connect but the server should reject the connection
         runtime.block_on(async {
@@ -690,6 +770,7 @@ mod tests {
                 match UnixSocketTransport::connect(&socket_path).await {
                     Ok(c) => {
                         client = Some(c);
+                        println!("Client connected successfully");
                         break;
                     }
                     Err(e) => {
@@ -707,13 +788,26 @@ mod tests {
             // The connection itself should succeed
             let mut client = client.unwrap();
 
+            // Wait for the server to process the authentication
+            // This ensures the server has time to reject the connection
+            match auth_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(true) => println!("Server rejected connection as expected"),
+                Ok(false) => println!("Server unexpectedly accepted connection"),
+                Err(_) => println!("Timeout waiting for server authentication result"),
+            }
+
+            // Add a small delay to ensure the server has time to close the connection if needed
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
             // But when we try to send a request, it should fail because the server closed the connection
             match client.send_request(&ClientRequest::Ping).await {
-                Err(_) => {
+                Err(e) => {
                     // This is expected - the server should have closed the connection
+                    println!("Request failed as expected: {}", e);
                 }
                 Ok(_) => {
                     // This is unexpected - the server should have rejected the connection
+                    println!("Request succeeded unexpectedly");
                     panic!("Server should have rejected the connection");
                 }
             }
