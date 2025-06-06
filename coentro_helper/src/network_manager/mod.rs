@@ -5,6 +5,11 @@
 
 use async_trait::async_trait;
 use thiserror::Error;
+use std::os::unix::io::AsRawFd;
+
+// Import the Linux implementation
+mod linux;
+pub use linux::LinuxNetworkManager;
 
 /// Result type for network operations
 pub type NetworkResult<T> = Result<T, NetworkError>;
@@ -115,70 +120,21 @@ pub trait NetworkManager: Send + Sync {
     async fn restore_dns(&self) -> NetworkResult<()>;
 }
 
-// In Sprint 1, we're just setting up the basic structure
-// Platform-specific implementations will be added in later sprints
-
-// For now, create a dummy implementation for Linux
-pub struct LinuxNetworkManager;
-
-impl LinuxNetworkManager {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl NetworkManager for LinuxNetworkManager {
-    async fn create_tun(&self, _config: TunConfig) -> NetworkResult<TunDetails> {
-        // This will be implemented in Sprint 2
-        Err(NetworkError::Other("Not implemented yet".to_string()))
-    }
-
-    async fn destroy_tun(&self, _name: &str) -> NetworkResult<()> {
-        // This will be implemented in Sprint 2
-        Err(NetworkError::Other("Not implemented yet".to_string()))
-    }
-
-    async fn add_route(
-        &self,
-        _destination: &str,
-        _gateway: Option<&str>,
-        _interface: &str,
-    ) -> NetworkResult<()> {
-        // This will be implemented in Sprint 2
-        Err(NetworkError::Other("Not implemented yet".to_string()))
-    }
-
-    async fn remove_route(
-        &self,
-        _destination: &str,
-        _gateway: Option<&str>,
-        _interface: &str,
-    ) -> NetworkResult<()> {
-        // This will be implemented in Sprint 2
-        Err(NetworkError::Other("Not implemented yet".to_string()))
-    }
-
-    async fn configure_dns(&self, _servers: &[String]) -> NetworkResult<()> {
-        // This will be implemented in Sprint 2
-        Err(NetworkError::Other("Not implemented yet".to_string()))
-    }
-
-    async fn restore_dns(&self) -> NetworkResult<()> {
-        // This will be implemented in Sprint 2
-        Err(NetworkError::Other("Not implemented yet".to_string()))
-    }
-}
 
 /// Create a platform-specific network manager
 ///
-/// For Sprint 1, we're just returning a concrete type instead of a trait object
-/// since async traits are not yet fully supported for trait objects.
-/// This will be refactored in a future sprint.
-#[allow(dead_code)]
+/// This function detects the platform and returns the appropriate implementation.
+/// For now, we only support Linux.
 pub fn create_network_manager() -> LinuxNetworkManager {
-    // For now, just return a Linux network manager
-    // In later sprints, this will detect the platform and return the appropriate implementation
-    LinuxNetworkManager::new()
+    #[cfg(target_os = "linux")]
+    {
+        LinuxNetworkManager::new()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // For non-Linux platforms, we still return a Linux implementation
+        // This will be replaced with platform-specific implementations in the future
+        LinuxNetworkManager::new()
+    }
 }

@@ -298,7 +298,7 @@ impl UnixSocketListener {
             .map_err(|e| IpcError::Connection(format!("Failed to bind to socket: {}", e)))?;
 
         // Set more restrictive permissions on the socket file
-        // We'll use 660 (rw-rw----) since we're now checking UID/GID
+        // We'll use 600 (rw-------) for maximum security since we're checking UID/GID
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -306,7 +306,7 @@ impl UnixSocketListener {
                 IpcError::Connection(format!("Failed to get socket metadata: {}", e))
             })?;
             let mut permissions = metadata.permissions();
-            permissions.set_mode(0o660); // rw-rw----
+            permissions.set_mode(0o600); // rw-------
             std::fs::set_permissions(path.as_ref(), permissions).map_err(|e| {
                 IpcError::Connection(format!("Failed to set socket permissions: {}", e))
             })?;

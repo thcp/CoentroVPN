@@ -70,6 +70,10 @@ pub struct TunnelReadyDetails {
 
     /// MTU value assigned to the interface
     pub assigned_mtu: u32,
+
+    /// File descriptor for the TUN device
+    #[serde(skip)]
+    pub fd: i32,
 }
 
 /// Status information about the helper daemon
@@ -128,6 +132,7 @@ mod tests {
             interface_name: "tun0".to_string(),
             assigned_ip: "10.0.0.1/24".to_string(),
             assigned_mtu: 1500,
+            fd: 0, // Not actually used in the test since it's skipped in serialization
         });
 
         let serialized = serialize(&response).expect("Failed to serialize response");

@@ -4,7 +4,7 @@ services:
   coentro-server:
     build:
       context: .
-      dockerfile: Dockerfile.server
+      dockerfile: docker/production/Dockerfile.server
     container_name: coentro-server
     restart: unless-stopped
     cap_add:
@@ -24,7 +24,7 @@ services:
   coentro-client:
     build:
       context: .
-      dockerfile: Dockerfile.client
+      dockerfile: docker/production/Dockerfile.client
     container_name: coentro-client
     restart: unless-stopped
     depends_on:

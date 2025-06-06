@@ -2,13 +2,14 @@
 //!
 //! This module handles IPC connections and requests from the client.
 
-use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails};
+use coentro_ipc::messages::{ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest};
 use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
+use crate::network_manager::{create_network_manager, NetworkManager, TunConfig};
 
 /// IPC Handler for the helper daemon
 pub struct IpcHandler {
@@ -30,6 +31,8 @@ struct ClientState {
     active_interface: Option<String>,
     /// Current IP configuration, if any
     current_ip_config: Option<String>,
+    /// File descriptor for the TUN device, if any
+    tun_fd: Option<i32>,
 }
 
 impl IpcHandler {
@@ -48,24 +51,54 @@ impl IpcHandler {
         mut shutdown_rx: oneshot::Receiver<()>,
         allowed_uids: Vec<u32>,
     ) -> anyhow::Result<()> {
+        // Ensure the socket directory exists with correct permissions
+        if let Some(parent) = socket_path.as_ref().parent() {
+            if !parent.exists() {
+                info!("Creating socket directory: {}", parent.display());
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow::anyhow!("Failed to create socket directory: {}", e))?;
+                
+                // Set directory permissions to 755 (rwxr-xr-x)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let metadata = std::fs::metadata(parent)
+                        .map_err(|e| anyhow::anyhow!("Failed to get directory metadata: {}", e))?;
+                    let mut permissions = metadata.permissions();
+                    permissions.set_mode(0o755); // rwxr-xr-x
+                    std::fs::set_permissions(parent, permissions)
+                        .map_err(|e| anyhow::anyhow!("Failed to set directory permissions: {}", e))?;
+                }
+            }
+        }
+
+        // Get the current user's UID
+        let current_uid = unsafe { libc::getuid() };
+        info!("Helper daemon running as UID={}", current_uid);
+
         // Create an authentication configuration
         let mut auth_config = AuthConfig::new().allow_root(true); // Allow root by default
 
         // If SUDO_UID is set, allow the original user
         if let Ok(uid) = std::env::var("SUDO_UID") {
             if let Ok(uid) = uid.parse::<u32>() {
-                debug!("Allowing UID {} (from SUDO_UID)", uid);
+                info!("Allowing UID {} (from SUDO_UID)", uid);
                 auth_config = auth_config.allow_uid(uid);
             }
+        } else {
+            // If not running with sudo, allow the current user
+            info!("Allowing current UID {} (not running with sudo)", current_uid);
+            auth_config = auth_config.allow_uid(current_uid);
         }
 
         // Allow UIDs from configuration
         for uid in allowed_uids {
-            debug!("Allowing UID {} (from configuration)", uid);
+            info!("Allowing UID {} (from configuration)", uid);
             auth_config = auth_config.allow_uid(uid);
         }
 
         // Create the Unix Domain Socket listener with authentication
+        info!("Creating socket with permissions 600 (rw-------) at {}", socket_path.as_ref().display());
         let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind to socket: {}", e))?;
@@ -91,13 +124,14 @@ impl IpcHandler {
                             let client_id = connection.peer_uid();
                             info!("Accepted connection from client ID={} (UID={})", client_id, client_id);
 
-                            // Create a new client state
-                            let client_state = ClientState {
-                                pid: client_id,
-                                tunnel_active: false,
-                                active_interface: None,
-                                current_ip_config: None,
-                            };
+                // Create a new client state
+                let client_state = ClientState {
+                    pid: client_id,
+                    tunnel_active: false,
+                    active_interface: None,
+                    current_ip_config: None,
+                    tun_fd: None,
+                };
 
                             // Store the client state
                             {
@@ -170,6 +204,137 @@ impl IpcHandler {
         Ok(())
     }
 
+    /// Set up a tunnel for a client
+    async fn setup_tunnel(
+        client_id: u32,
+        setup: TunnelSetupRequest,
+        active_clients: Arc<Mutex<HashMap<u32, ClientState>>>,
+    ) -> anyhow::Result<TunnelReadyDetails> {
+        // Check if the client already has an active tunnel
+        let client_state = {
+            let active_clients = active_clients.lock().unwrap();
+            active_clients.get(&client_id).cloned()
+        };
+
+        if let Some(state) = client_state {
+            if state.tunnel_active {
+                return Err(anyhow::anyhow!(
+                    "Client already has an active tunnel: {}",
+                    state.active_interface.unwrap_or_default()
+                ));
+            }
+        }
+
+        // Create a network manager
+        let network_manager = create_network_manager();
+
+        // Create a TUN configuration
+        let tun_config = TunConfig {
+            name: Some(format!("tun{}", client_id % 10)), // Use client_id to generate a unique name
+            ip_config: setup.requested_ip_config.unwrap_or_else(|| "10.0.0.1/24".to_string()),
+            mtu: setup.mtu.unwrap_or(1500),
+        };
+
+        // Create the TUN interface
+        let tun_details = network_manager
+            .create_tun(tun_config)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create TUN interface: {}", e))?;
+
+        // Add routes if specified
+        for route in &setup.routes_to_add {
+            network_manager
+                .add_route(route, None, &tun_details.name)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to add route {}: {}", route, e)
+                })?;
+        }
+
+        // Configure DNS if specified
+        if let Some(dns_servers) = &setup.dns_servers {
+            network_manager
+                .configure_dns(dns_servers)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to configure DNS: {}", e))?;
+        }
+
+        // Update the client state
+        {
+            let mut active_clients = active_clients.lock().unwrap();
+            if let Some(state) = active_clients.get_mut(&client_id) {
+                state.tunnel_active = true;
+                state.active_interface = Some(tun_details.name.clone());
+                state.current_ip_config = Some(tun_details.ip_config.clone());
+                state.tun_fd = Some(tun_details.fd);
+            }
+        }
+
+        // Return the tunnel details
+        // Note: In a real implementation, we would pass the file descriptor over the Unix socket
+        // For now, we'll just use a mock file descriptor
+        Ok(TunnelReadyDetails {
+            interface_name: tun_details.name,
+            assigned_ip: tun_details.ip_config,
+            assigned_mtu: tun_details.mtu,
+            fd: 0, // Mock file descriptor
+        })
+    }
+
+    /// Tear down a tunnel for a client
+    async fn teardown_tunnel(
+        client_id: u32,
+        active_clients: Arc<Mutex<HashMap<u32, ClientState>>>,
+    ) -> anyhow::Result<()> {
+        // Get the client state
+        let client_state = {
+            let active_clients = active_clients.lock().unwrap();
+            active_clients.get(&client_id).cloned()
+        };
+
+        // Check if the client has an active tunnel
+        let (interface_name, _) = match client_state {
+            Some(state) if state.tunnel_active => {
+                if let Some(name) = &state.active_interface {
+                    (name.clone(), state.tun_fd)
+                } else {
+                    return Err(anyhow::anyhow!("Client has no active interface"));
+                }
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Client has no active tunnel"));
+            }
+        };
+
+        // Create a network manager
+        let network_manager = create_network_manager();
+
+        // Restore DNS configuration
+        network_manager
+            .restore_dns()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to restore DNS configuration: {}", e))?;
+
+        // Destroy the TUN interface
+        network_manager
+            .destroy_tun(&interface_name)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to destroy TUN interface: {}", e))?;
+
+        // Update the client state
+        {
+            let mut active_clients = active_clients.lock().unwrap();
+            if let Some(state) = active_clients.get_mut(&client_id) {
+                state.tunnel_active = false;
+                state.active_interface = None;
+                state.current_ip_config = None;
+                state.tun_fd = None;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handle a client connection
     async fn handle_client(
         mut connection: UnixSocketConnection,
@@ -235,17 +400,31 @@ impl IpcHandler {
                         HelperResponse::Error("Client state not found".to_string())
                     }
                 }
-                ClientRequest::SetupTunnel(_) => {
-                    // In Sprint 1, we're just implementing the basic IPC framework
-                    // Actual tunnel setup will be implemented in Sprint 2
-                    debug!("Tunnel setup not implemented yet");
-                    HelperResponse::Error("Tunnel setup not implemented yet".to_string())
+                ClientRequest::SetupTunnel(setup) => {
+                    debug!("Setting up tunnel for client ID={}: {:?}", client_id, setup);
+                    match IpcHandler::setup_tunnel(client_id, setup, active_clients.clone()).await {
+                        Ok(details) => {
+                            debug!("Tunnel setup successful for client ID={}: {:?}", client_id, details);
+                            HelperResponse::TunnelReady(details)
+                        }
+                        Err(e) => {
+                            error!("Failed to set up tunnel for client ID={}: {}", client_id, e);
+                            HelperResponse::Error(format!("Failed to set up tunnel: {}", e))
+                        }
+                    }
                 }
                 ClientRequest::TeardownTunnel => {
-                    // In Sprint 1, we're just implementing the basic IPC framework
-                    // Actual tunnel teardown will be implemented in Sprint 2
-                    debug!("Tunnel teardown not implemented yet");
-                    HelperResponse::Error("Tunnel teardown not implemented yet".to_string())
+                    debug!("Tearing down tunnel for client ID={}", client_id);
+                    match IpcHandler::teardown_tunnel(client_id, active_clients.clone()).await {
+                        Ok(()) => {
+                            debug!("Tunnel teardown successful for client ID={}", client_id);
+                            HelperResponse::Success
+                        }
+                        Err(e) => {
+                            error!("Failed to tear down tunnel for client ID={}: {}", client_id, e);
+                            HelperResponse::Error(format!("Failed to tear down tunnel: {}", e))
+                        }
+                    }
                 }
             };
 

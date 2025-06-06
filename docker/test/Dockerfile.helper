@@ -1,0 +1,44 @@
+# Dockerfile.helper for CoentroVPN Testing
+# This builds the coentro_helper daemon in a Linux container for testing
+
+FROM rust:1.87.0-slim-bookworm
+
+# Add a build argument to invalidate cache when needed
+ARG CACHE_BUST=1
+
+# Install build dependencies and networking tools for testing
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    iproute2 \
+    net-tools \
+    iputils-ping \
+    curl \
+    procps \
+    iptables \
+    sudo \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the entire project
+# Note: The actual copying happens from the build context specified in docker-compose.yml
+COPY . .
+
+# Build the helper daemon
+RUN cargo build --bin coentro_helper
+
+# Verify that the binary exists and is executable
+RUN ls -la ./target/debug/coentro_helper && \
+    file ./target/debug/coentro_helper
+
+# Create directory for the Unix Domain Socket
+RUN mkdir -p /var/run/coentrovpn && chmod 777 /var/run/coentrovpn
+
+# Set the entrypoint to the helper daemon
+ENTRYPOINT ["./target/debug/coentro_helper"]
+
+# Default command (can be overridden)
+CMD ["--verbose"]

@@ -328,6 +328,7 @@ name = "coentro_client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "coentro_ipc",
  "env_logger",
@@ -336,6 +337,7 @@ dependencies = [
  "shared_utils",
  "thiserror 1.0.69",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -347,6 +349,7 @@ dependencies = [
  "clap",
  "coentro_ipc",
  "env_logger",
+ "libc",
  "log",
  "nix",
  "serde",
@@ -1990,6 +1993,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-util"
+version = "0.6.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36943ee01a6d67977dd3f84a5a1d2efeb4ada3a1ae771cadfaa535d9d9fc6507"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "log",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2123,9 +2140,14 @@ version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbc25e23adc6cac7dd895ce2780f255902290fc39b00e1ae3c33e89f3d20fa66"
 dependencies = [
+ "byteorder",
+ "bytes",
+ "futures-core",
  "ioctl-sys",
  "libc",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

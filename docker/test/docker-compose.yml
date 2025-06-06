@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  helper:
+    build:
+      context: ../../  # Points to project root
+      dockerfile: ./docker/test/Dockerfile.helper
+    container_name: coentro-helper-test
+    privileged: true  # Required for TUN device creation
+    cap_add:
+      - NET_ADMIN  # Required for network operations
+    volumes:
+      - ../../:/app  # Mount the project root for development
+      - socket-volume:/var/run/coentrovpn  # Shared volume for the Unix Domain Socket
+    networks:
+      - coentro-test-net
+    environment:
+      - LOG_LEVEL=debug
+      - RUST_BACKTRACE=1
+    # Keep the container running
+    tty: true
+    stdin_open: true
+
+  client:
+    build:
+      context: ../../  # Points to project root
+      dockerfile: ./docker/test/Dockerfile.client
+    container_name: coentro-client-test
+    depends_on:
+      - helper
+    # Share the network namespace with the helper
+    network_mode: "service:helper"
+    volumes:
+      - ../../:/app  # Mount the project root for development
+      - socket-volume:/var/run/coentrovpn  # Shared volume for the Unix Domain Socket
+    environment:
+      - LOG_LEVEL=debug
+      - RUST_BACKTRACE=1
+    # Run as non-root user for testing client permissions
+    user: coentro_user
+    # Keep the container running
+    tty: true
+    stdin_open: true
+    # By default, don't start the client automatically
+    # This allows us to exec into the container and run tests manually
+    entrypoint: ["sleep", "infinity"]
+
+networks:
+  coentro-test-net:
+    driver: bridge
+
+volumes:
+  socket-volume:  # Shared volume for the Unix Domain Socket
