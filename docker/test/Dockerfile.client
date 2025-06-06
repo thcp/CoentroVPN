@@ -1,0 +1,48 @@
+# Dockerfile.client for CoentroVPN Testing
+# This builds the coentro_client in a Linux container for testing
+
+FROM rust:1.87.0-slim-bookworm
+
+# Add a build argument to invalidate cache when needed
+ARG CACHE_BUST=1
+
+# Install build dependencies and networking tools for testing
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    iproute2 \
+    net-tools \
+    iputils-ping \
+    curl \
+    tcpdump \
+    procps \
+    sudo \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the entire project
+# Note: The actual copying happens from the build context specified in docker-compose.yml
+COPY . .
+
+# Build the client
+RUN cargo build --bin coentro_client
+
+# Verify that the binary exists and is executable
+RUN ls -la ./target/debug/coentro_client && \
+    file ./target/debug/coentro_client
+
+# Create the coentrovpn group and a non-root user to run the client
+RUN groupadd -r coentrovpn && \
+    useradd -m -s /bin/bash -G coentrovpn coentro_user
+
+# Configure sudo to allow coentro_user to run sudo without a password
+RUN echo "coentro_user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/coentro_user
+
+# Set the entrypoint to the client
+ENTRYPOINT ["./target/debug/coentro_client"]
+
+# Default command (can be overridden)
+CMD ["--verbose"]

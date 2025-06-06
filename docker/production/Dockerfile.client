@@ -1,0 +1,57 @@
+# Dockerfile.client for CoentroVPN
+# Multi-stage build for a minimal, secure client image
+
+# Stage 1: Builder
+FROM rust:1.87.0-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a new empty project
+WORKDIR /app
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+COPY Cargo.toml Cargo.lock ./
+COPY cli_client/Cargo.toml ./cli_client/
+COPY coentro_client/Cargo.toml ./coentro_client/
+COPY coentro_ipc/Cargo.toml ./coentro_ipc/
+COPY shared_utils/Cargo.toml ./shared_utils/
+
+# Build dependencies (this will be cached if dependencies don't change)
+RUN cargo build --release \
+    --bin cli_client \
+    --bin coentro_client
+
+# Remove the dummy source files
+RUN rm -rf src target/release/deps/cli_client* \
+    target/release/deps/coentro_client*
+
+# Copy the actual source code
+COPY cli_client/src ./cli_client/src
+COPY coentro_client/src ./coentro_client/src
+COPY coentro_ipc/src ./coentro_ipc/src
+COPY shared_utils/src ./shared_utils/src
+
+# Build the actual binaries
+RUN cargo build --release \
+    --bin cli_client \
+    --bin coentro_client
+
+# Stage 2: Runtime (distroless)
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+
+# Copy the compiled binaries
+COPY --from=builder /app/target/release/cli_client /usr/local/bin/
+COPY --from=builder /app/target/release/coentro_client /usr/local/bin/
+
+# Create a directory for configuration
+WORKDIR /app
+VOLUME /app/config
+
+# Set the entrypoint to the CLI client
+ENTRYPOINT ["/usr/local/bin/cli_client"]
+
+# Default command (can be overridden)
+CMD ["--help"]

@@ -1,0 +1,79 @@
+services:
+  helper:
+    platform: linux/amd64
+    build:
+      context: ../../  # Points to project root
+      dockerfile: ./docker/test/Dockerfile.helper
+    container_name: coentro-helper-test
+    privileged: true  # Required for TUN device creation
+    cap_add:
+      - NET_ADMIN  # Required for network operations
+    volumes:
+      - socket-volume:/var/run/coentrovpn  # Shared volume for the Unix Domain Socket
+    networks:
+      - coentro-test-net
+    environment:
+      - LOG_LEVEL=debug
+      - RUST_BACKTRACE=1
+    # Keep the container running
+    tty: true
+    stdin_open: true
+
+  test-runner:
+    platform: linux/amd64
+    build:
+      context: ../../  # Points to project root
+      dockerfile: ./docker/test/Dockerfile.helper
+    container_name: coentro-test-runner
+    privileged: true  # Required for TUN device creation
+    cap_add:
+      - NET_ADMIN  # Required for network operations
+    depends_on:
+      - helper
+    volumes:
+      - socket-volume:/var/run/coentrovpn  # Shared volume for the Unix Domain Socket
+      - ../../:/app  # Mount the project root for access to test scripts
+    # Share the network namespace with the helper
+    network_mode: "service:helper"
+    environment:
+      - LOG_LEVEL=debug
+      - RUST_BACKTRACE=1
+    # Override the entrypoint to run bash instead of the helper daemon
+    entrypoint: ["/bin/bash"]
+    # Keep the container running
+    tty: true
+    stdin_open: true
+    # By default, don't start any tests automatically
+    # This allows us to exec into the container and run tests manually
+    command: ["-c", "sleep infinity"]
+
+  client:
+    platform: linux/amd64
+    build:
+      context: ../../  # Points to project root
+      dockerfile: ./docker/test/Dockerfile.client
+    container_name: coentro-client-test
+    depends_on:
+      - helper
+    # Share the network namespace with the helper
+    network_mode: "service:helper"
+    volumes:
+      - socket-volume:/var/run/coentrovpn  # Shared volume for the Unix Domain Socket
+    environment:
+      - LOG_LEVEL=debug
+      - RUST_BACKTRACE=1
+    # Run as non-root user for testing client permissions
+    user: coentro_user
+    # Keep the container running
+    tty: true
+    stdin_open: true
+    # By default, don't start the client automatically
+    # This allows us to exec into the container and run tests manually
+    entrypoint: ["sleep", "infinity"]
+
+networks:
+  coentro-test-net:
+    driver: bridge
+
+volumes:
+  socket-volume:  # Shared volume for the Unix Domain Socket

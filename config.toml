@@ -43,3 +43,10 @@ virtual_ip_range = "10.0.0.0/24"
 dns_servers = ["8.8.8.8", "1.1.1.1"]
 # Routes to push to clients
 routes = ["192.168.1.0/24"]
+
+# Helper daemon configuration
+[helper]
+# List of user IDs allowed to connect to the helper daemon
+# These UIDs will be allowed to connect to the helper daemon in addition to root
+# and the user who installed the helper daemon (SUDO_UID)
+allowed_uids = [501, 1000]  # Added 1000 for coentro_user in Docker container

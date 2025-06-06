@@ -11,6 +11,9 @@ CoentroVPN is a Rust-based, multi-protocol VPN (QUIC, OpenVPN, WireGuard, IPsec)
 - **gui_client/** → Rust + Tauri/Electron GUI client  
 - **shared_utils/** → Shared Rust utilities (crypto, config, logging)  
 - **dashboard/** → React + Vite frontend management dashboard  
+- **coentro_ipc/** → IPC protocol for split daemon architecture
+- **coentro_helper/** → Privileged helper daemon for system-level operations
+- **coentro_client/** → Unprivileged client for split daemon architecture
 
 ---
 
@@ -60,6 +63,36 @@ cd dashboard && npm run test
 ```
 
 ---
+
+## 🚀 Split Daemon Architecture
+
+CoentroVPN uses a split daemon architecture to enhance security and provide full VPN functionality:
+
+1. **Unprivileged Client (`coentro_client`)**: Handles user interactions, QUIC connections, encryption, and packet processing.
+2. **Privileged Helper (`coentro_helper`)**: Manages system-level operations requiring elevated privileges (TUN interfaces, routing, DNS).
+
+These components communicate via a secure IPC channel defined in the `coentro_ipc` library.
+
+### Benefits
+
+- **Enhanced Security**: Minimizes code running with elevated privileges
+- **Full VPN Functionality**: Enables TUN interface creation, routing table modifications, and DNS configuration
+- **Platform Abstraction**: Consistent client experience across operating systems
+- **Improved User Experience**: No need to run the entire client as administrator/root
+
+### Installation
+
+The helper daemon requires elevated privileges. Installation scripts are provided for Linux and macOS:
+
+```bash
+# Linux
+sudo ./scripts/install_helper.sh
+
+# macOS
+sudo ./scripts/install_helper_macos.sh
+```
+
+See [Helper Installation Guide](docs/helper_installation.md) for more details.
 
 ## 🚀 Running the Demo
 
@@ -132,6 +165,19 @@ cd gui_client
 cargo run --release
 ```
 
+#### 7. Run the Unprivileged Client with Helper Daemon
+```bash
+# First, ensure the helper daemon is installed and running
+sudo ./scripts/install_helper.sh
+
+# Then run the unprivileged client
+cd coentro_client
+cargo run --release
+
+# Or, to test the connection to the helper daemon
+cargo run --release -- --ping-helper
+```
+
 ### Running E2E Tests
 ```bash
 cargo run --example e2e_test
@@ -162,7 +208,9 @@ cargo run --release --bin cli_client -- --config config.custom.toml
 
 ---
 
-## 📦 Docker Compose Example
+## 📦 Docker Deployment Options
+
+### Standard Docker Compose Example
 
 ```yaml
 version: '3.8'
@@ -187,6 +235,18 @@ services:
       - "3000:3000"
 ```
 
+### Distroless Deployment (Enhanced Security)
+
+For production environments, we provide distroless Docker images that offer enhanced security and minimal footprint:
+
+```bash
+# Using the deployment script
+./scripts/docker-deploy.sh build
+./scripts/docker-deploy.sh up
+```
+
+See [Docker Deployment Guide](DOCKER.md) for detailed instructions on deploying CoentroVPN using distroless containers.
+
 ---
 
 ## 🚀 CI/CD Pipeline
@@ -202,6 +262,11 @@ We use GitHub Actions for build pipelines. See `.github/workflows/ci.yml`.
 - Add Docker Compose  
 - Set up GitHub Actions CI build  
 - Validate local builds  
+- Implement split daemon architecture foundation:
+  - Create IPC protocol for client-helper communication
+  - Implement basic helper daemon for privileged operations
+  - Implement unprivileged client
+  - Add installation scripts and documentation
 
 ---
 
