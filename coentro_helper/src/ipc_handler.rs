@@ -2,7 +2,7 @@
 //!
 //! This module handles IPC connections and requests from the client.
 
-use crate::network_manager::{create_network_manager, NetworkManager, TunConfig};
+use crate::network_manager::{create_network_manager, TunConfig};
 use coentro_ipc::messages::{
     ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest,
 };
@@ -402,14 +402,13 @@ impl IpcHandler {
             }
         }
 
-        // Return the tunnel details
-        // Note: In a real implementation, we would pass the file descriptor over the Unix socket
-        // For now, we'll just use a mock file descriptor
+        // Return the tunnel details with the real file descriptor
+        // The file descriptor will be passed over the Unix socket
         Ok(TunnelReadyDetails {
             interface_name: tun_details.name,
             assigned_ip: tun_details.ip_config,
             assigned_mtu: tun_details.mtu,
-            fd: 0, // Mock file descriptor
+            fd: tun_details.fd, // Real file descriptor from the TUN device
         })
     }
 
@@ -438,8 +437,8 @@ impl IpcHandler {
             }
         };
 
-        // Create a network manager
-        let network_manager = create_network_manager();
+                                // Create a network manager
+                                let network_manager = create_network_manager();
 
         // Restore DNS configuration
         network_manager
