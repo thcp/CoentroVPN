@@ -9,7 +9,10 @@ use thiserror::Error;
 // Import platform-specific implementations
 mod linux;
 mod macos;
-#[cfg(any(target_os = "linux", not(any(target_os = "linux", target_os = "macos"))))]
+#[cfg(any(
+    target_os = "linux",
+    not(any(target_os = "linux", target_os = "macos"))
+))]
 use linux::LinuxNetworkManager;
 pub use macos::MacOsNetworkManager;
 

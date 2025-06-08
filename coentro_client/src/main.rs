@@ -177,7 +177,10 @@ async fn main() -> anyhow::Result<()> {
                 info!("QUIC connection established, starting tunnel...");
 
                 // Create a TUN handler using the file descriptor received from the helper daemon
-                info!("Creating TUN handler with file descriptor {}", tunnel_details.fd);
+                info!(
+                    "Creating TUN handler with file descriptor {}",
+                    tunnel_details.fd
+                );
                 let tun_handler = TunHandler::new(
                     tunnel_details.fd, // Real file descriptor from the helper daemon
                     tunnel_details.interface_name,

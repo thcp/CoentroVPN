@@ -23,7 +23,7 @@ use libc::xucred as UnixCredentials;
 
 // Platform-specific imports for file descriptor passing
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use nix::sys::socket::{sendmsg, recvmsg, ControlMessage, ControlMessageOwned, MsgFlags};
+use nix::sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags};
 
 /// Result type for IPC operations
 pub type IpcResult<T> = Result<T, IpcError>;

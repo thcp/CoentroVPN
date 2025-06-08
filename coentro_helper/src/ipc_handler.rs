@@ -437,8 +437,8 @@ impl IpcHandler {
             }
         };
 
-                                // Create a network manager
-                                let network_manager = create_network_manager();
+        // Create a network manager
+        let network_manager = create_network_manager();
 
         // Restore DNS configuration
         network_manager

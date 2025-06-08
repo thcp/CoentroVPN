@@ -7,7 +7,7 @@ use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::process::Command;
 use tokio::process::Command as TokioCommand;
@@ -31,11 +31,7 @@ impl MacOsNetworkManager {
     }
 
     /// Run a system command and return the output
-    async fn run_command(
-        command: &str,
-        args: &[&str],
-        error_msg: &str,
-    ) -> NetworkResult<String> {
+    async fn run_command(command: &str, args: &[&str], error_msg: &str) -> NetworkResult<String> {
         debug!("Running command: {} {:?}", command, args);
 
         let output = TokioCommand::new(command)
@@ -62,59 +58,61 @@ impl MacOsNetworkManager {
     fn open_tun_device(&self) -> NetworkResult<(File, String)> {
         // On macOS, we need to use a different approach to create TUN devices
         // We'll use the system's socket API to create a TUN device
-        
+
         info!("Creating TUN device using socket API");
-        
+
         // First, try to use the system command to create a TUN device
         // This is a more reliable approach on macOS
         let output = match std::process::Command::new("sh")
             .arg("-c")
             .arg("networksetup -listallnetworkservices | grep -i vpn || echo 'No VPN found'")
-            .output() {
-                Ok(output) => output,
-                Err(e) => {
-                    error!("Failed to check for existing VPN services: {}", e);
-                    return Err(NetworkError::SystemCommand(format!(
-                        "Failed to check for existing VPN services: {}",
-                        e
-                    )));
-                }
-            };
-            
+            .output()
+        {
+            Ok(output) => output,
+            Err(e) => {
+                error!("Failed to check for existing VPN services: {}", e);
+                return Err(NetworkError::SystemCommand(format!(
+                    "Failed to check for existing VPN services: {}",
+                    e
+                )));
+            }
+        };
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         info!("Existing VPN services: {}", stdout);
-        
+
         // Try to create a TUN device using a different approach
         // On macOS, we can use the 'sudo networksetup -createnetworkservice' command
         // But this requires additional setup and permissions
-        
+
         // For now, let's try to use an existing TUN device
         // On macOS, TUN devices are typically named 'utunX'
         for i in 0..10 {
             let device_name = format!("utun{}", i);
-            
+
             // Check if the device exists using ifconfig
             let output = match std::process::Command::new("ifconfig")
                 .arg(&device_name)
-                .output() {
-                    Ok(output) => output,
-                    Err(e) => {
-                        error!("Failed to check if {} exists: {}", device_name, e);
-                        continue;
-                    }
-                };
-                
+                .output()
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    error!("Failed to check if {} exists: {}", device_name, e);
+                    continue;
+                }
+            };
+
             if !output.status.success() {
                 // Device doesn't exist, try the next one
                 continue;
             }
-            
+
             // Device exists, try to open it
             info!("Found existing TUN device: {}", device_name);
-            
+
             // On macOS, we need to use a different approach to open TUN devices
             // We'll use the system's socket API to open the device
-            
+
             // For testing purposes, let's create a dummy file to represent the TUN device
             // In a real implementation, we would use the socket API to open the device
             let dummy_file = match std::fs::File::open("/dev/null") {
@@ -124,11 +122,11 @@ impl MacOsNetworkManager {
                     continue;
                 }
             };
-            
+
             info!("Successfully opened TUN device: {}", device_name);
             return Ok((dummy_file, device_name));
         }
-        
+
         // If we get here, we couldn't open any TUN device
         Err(NetworkError::TunDevice(
             "Failed to open any TUN device".to_string(),
@@ -168,32 +166,40 @@ impl MacOsNetworkManager {
             let octets: Vec<&str> = ip_address.split('.').collect();
             if octets.len() == 4 {
                 let last_octet = octets[3].parse::<u8>().unwrap_or(1);
-                let new_last_octet = if last_octet < 255 { last_octet + 1 } else { last_octet - 1 };
-                format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], new_last_octet)
+                let new_last_octet = if last_octet < 255 {
+                    last_octet + 1
+                } else {
+                    last_octet - 1
+                };
+                format!(
+                    "{}.{}.{}.{}",
+                    octets[0], octets[1], octets[2], new_last_octet
+                )
             } else {
                 // Fallback to a default destination IP
                 "10.0.0.2".to_string()
             }
         };
-        info!("Using source IP {} and destination IP {}", ip_address, dest_ip);
+        info!(
+            "Using source IP {} and destination IP {}",
+            ip_address, dest_ip
+        );
 
         // First, bring the interface up
         Self::run_command(
             "ifconfig",
-            &[
-                interface_name,
-                "up",
-                "mtu",
-                &mtu.to_string(),
-            ],
+            &[interface_name, "up", "mtu", &mtu.to_string()],
             "Failed to bring up TUN interface",
         )
         .await?;
 
         // Then, configure the IP address
         // On macOS, for point-to-point interfaces, we need to specify both source and destination IPs
-        info!("Configuring IP address for {}: {} -> {}", interface_name, ip_address, dest_ip);
-        
+        info!(
+            "Configuring IP address for {}: {} -> {}",
+            interface_name, ip_address, dest_ip
+        );
+
         // Use the approach that worked in our tests
         Self::run_command(
             "ifconfig",
@@ -208,7 +214,7 @@ impl MacOsNetworkManager {
             "Failed to configure TUN interface",
         )
         .await?;
-        
+
         // Verify the interface configuration
         let output = Self::run_command(
             "ifconfig",
@@ -216,18 +222,21 @@ impl MacOsNetworkManager {
             "Failed to get interface configuration",
         )
         .await?;
-        
+
         info!("Interface configuration: {}", output);
-        
+
         // Check if the IP address was configured correctly
         if !output.contains(ip_address) {
-            warn!("IP address {} not found in interface configuration", ip_address);
+            warn!(
+                "IP address {} not found in interface configuration",
+                ip_address
+            );
             return Err(NetworkError::TunDevice(format!(
                 "Failed to configure IP address for {}: IP address not found in interface configuration",
                 interface_name
             )));
         }
-        
+
         Ok(())
     }
 
@@ -416,9 +425,7 @@ impl NetworkManager for MacOsNetworkManager {
         self.write_dns_config(servers)?;
 
         // Flush the DNS cache
-        let _ = Command::new("dscacheutil")
-            .args(&["-flushcache"])
-            .output();
+        let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
 
         Ok(())
     }
@@ -432,9 +439,7 @@ impl NetworkManager for MacOsNetworkManager {
             self.write_dns_config(original)?;
 
             // Flush the DNS cache
-            let _ = Command::new("dscacheutil")
-                .args(&["-flushcache"])
-                .output();
+            let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
 
             // Clear the saved original DNS configuration
             let this = self as *const Self as *mut Self;
