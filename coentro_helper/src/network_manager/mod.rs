@@ -9,11 +9,9 @@ use thiserror::Error;
 // Import platform-specific implementations
 mod linux;
 mod macos;
-#[cfg(any(
-    target_os = "linux",
-    not(any(target_os = "linux", target_os = "macos"))
-))]
+#[cfg(target_os = "linux")]
 use linux::LinuxNetworkManager;
+#[cfg(target_os = "macos")]
 pub use macos::MacOsNetworkManager;
 
 /// Result type for network operations
@@ -141,8 +139,6 @@ pub fn create_network_manager() -> Box<dyn NetworkManager> {
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        // For unsupported platforms, we default to Linux implementation
-        // This should be updated as more platforms are supported
-        Box::new(LinuxNetworkManager::new())
+        panic!("Unsupported platform for network manager");
     }
 }
