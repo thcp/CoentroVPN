@@ -8,6 +8,7 @@
 
 mod ipc_handler;
 mod network_manager;
+mod sleep_monitor;
 
 use clap::Parser;
 use log::{debug, error, info, warn, LevelFilter};

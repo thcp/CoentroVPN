@@ -13,3 +13,4 @@ async-trait = "0.1"
 log = "0.4"
 nix = { version = "0.26", features = ["socket", "uio"] }
 libc = "0.2"
+regex = "1.8"

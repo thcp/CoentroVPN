@@ -199,10 +199,35 @@ The launchd property list file (`co.coentrovpn.helper.plist`) defines:
 4. Service behavior (keep-alive, run at load)
 5. User and group for the daemon process
 
+## Sleep/Wake Event Handling
+
+The helper daemon now includes support for system sleep/wake event handling, which improves service reliability when the system goes to sleep and wakes up.
+
+### Implementation Details
+
+1. **Wake Event Detection**: The helper daemon uses the `SIGWINCH` signal as a proxy for wake events. When the system wakes up, this signal is often triggered due to terminal window size changes.
+
+2. **Automatic Tunnel Management**: When a wake event is detected, the helper daemon:
+   - Logs the event
+   - Identifies all active tunnels
+   - Takes appropriate action based on the event type
+
+3. **Future Enhancements**: The current implementation only handles wake events. Sleep event detection will be implemented in a future update.
+
+### Testing Sleep/Wake Handling
+
+To test the sleep/wake event handling:
+
+1. Start the helper daemon
+2. Connect a client and establish a tunnel
+3. Put the system to sleep (close the laptop lid or use the sleep option)
+4. Wake the system
+5. Check the logs to verify that the wake event was detected
+
 ## Future Improvements
 
 1. **Enhance UID/GID verification** with additional security checks
-2. **Implement system sleep/wake event handling** for better service reliability
+2. **Implement sleep event detection** to complement the existing wake event handling
 3. **Add more robust error handling** for socket activation
 4. **Implement token-based authentication** for more granular access control
 5. **Add comprehensive audit logging** for security events

@@ -3,6 +3,7 @@
 //! This module handles IPC connections and requests from the client.
 
 use crate::network_manager::{create_network_manager, TunConfig};
+use crate::sleep_monitor::{sleep_monitor, SleepEvent};
 use coentro_ipc::messages::{
     ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest,
 };
@@ -16,6 +17,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio_stream::StreamExt;
 
 /// Get the group ID (GID) for a given group name
 /// Returns None if the group doesn't exist
@@ -40,17 +42,27 @@ fn get_group_id(group_name: &str) -> Option<u32> {
     }
 }
 
+/// Rate limit configuration
+const RATE_LIMIT_REQUESTS: u32 = 30; // Maximum number of requests per client
+const RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds
+const GLOBAL_RATE_LIMIT_CONNECTIONS: u32 = 10; // Maximum number of new connections per minute
+const GLOBAL_RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds for global rate limit
+
 /// IPC Handler for the helper daemon
 pub struct IpcHandler {
     /// Active client connections
     active_clients: Arc<Mutex<HashMap<u32, ClientState>>>,
     /// Helper daemon version
     version: String,
+    /// Global rate limiter for all incoming connections
+    global_rate_limiter: Arc<
+        RateLimiter<
+            governor::state::NotKeyed,
+            governor::state::InMemoryState,
+            governor::clock::DefaultClock,
+        >,
+    >,
 }
-
-/// Rate limit configuration
-const RATE_LIMIT_REQUESTS: u32 = 30; // Maximum number of requests
-const RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds
 
 /// State for an active client
 #[derive(Clone)]
@@ -79,37 +91,130 @@ struct ClientState {
 
 impl IpcHandler {
     /// Sanitize error messages to prevent information leakage
+    ///
+    /// This function takes a detailed error message and returns a sanitized version
+    /// that is safe to send to clients. It removes any sensitive information like
+    /// file paths, system details, or specific error codes that could be used
+    /// for reconnaissance.
+    ///
+    /// The original error is logged for administrators to troubleshoot.
     fn sanitize_error_message(error_msg: &str) -> String {
-        // Check for common patterns that might contain sensitive information
-        if error_msg.contains("Permission denied") {
-            return "Operation not permitted due to insufficient privileges".to_string();
-        } else if error_msg.contains("/etc")
-            || error_msg.contains("/var")
-            || error_msg.contains("/usr")
+        // Log the original error for administrators (with ERROR level for visibility)
+        error!("Original error before sanitization: {}", error_msg);
+
+        // Validation errors are generally safe to pass through as they help legitimate users
+        if (error_msg.contains("Invalid") || error_msg.contains("invalid"))
+            && !error_msg.contains("/")
+            && !error_msg.contains("\\")
         {
-            return "System configuration error".to_string();
-        } else if error_msg.contains("No such file") || error_msg.contains("not found") {
-            return "Required resource not available".to_string();
-        } else if error_msg.contains("Device") || error_msg.contains("interface") {
-            return "Network device error".to_string();
-        } else if error_msg.contains("route") || error_msg.contains("routing") {
-            return "Routing configuration error".to_string();
-        } else if error_msg.contains("DNS") || error_msg.contains("resolv.conf") {
-            return "DNS configuration error".to_string();
-        } else if error_msg.contains("Invalid") || error_msg.contains("invalid") {
-            // Keep validation errors as they are generally safe and helpful
             return error_msg.to_string();
         }
 
-        // Default generic error message
+        // Check for common patterns that might contain sensitive information
+        // Use more specific pattern matching to catch more variants
+
+        // Authentication/permission errors
+        if error_msg.contains("Permission denied")
+            || error_msg.contains("Access denied")
+            || error_msg.contains("not permitted")
+            || error_msg.contains("privilege")
+            || error_msg.contains("EPERM")
+        {
+            return "Operation not permitted due to insufficient privileges".to_string();
+        }
+        // File system errors
+        else if error_msg.contains("/etc")
+            || error_msg.contains("/var")
+            || error_msg.contains("/usr")
+            || error_msg.contains("/dev")
+            || error_msg.contains("/tmp")
+            || error_msg.contains("/home")
+            || error_msg.contains("/Library")
+            || error_msg.contains(":\\")  // Windows paths
+            || error_msg.contains("\\\\")
+        // UNC paths
+        {
+            return "System configuration error".to_string();
+        }
+        // Missing resource errors
+        else if error_msg.contains("No such file")
+            || error_msg.contains("not found")
+            || error_msg.contains("does not exist")
+            || error_msg.contains("ENOENT")
+        {
+            return "Required resource not available".to_string();
+        }
+        // Network device errors
+        else if error_msg.contains("Device")
+            || error_msg.contains("interface")
+            || error_msg.contains("tun")
+            || error_msg.contains("tap")
+            || error_msg.contains("eth")
+            || error_msg.contains("wlan")
+        {
+            return "Network device error".to_string();
+        }
+        // Routing errors
+        else if error_msg.contains("route")
+            || error_msg.contains("routing")
+            || error_msg.contains("gateway")
+        {
+            return "Routing configuration error".to_string();
+        }
+        // DNS errors
+        else if error_msg.contains("DNS")
+            || error_msg.contains("resolv.conf")
+            || error_msg.contains("nameserver")
+        {
+            return "DNS configuration error".to_string();
+        }
+        // Connection errors
+        else if error_msg.contains("Connection")
+            || error_msg.contains("connect")
+            || error_msg.contains("socket")
+            || error_msg.contains("ECONNREFUSED")
+            || error_msg.contains("ECONNRESET")
+        {
+            return "Connection error".to_string();
+        }
+        // Timeout errors
+        else if error_msg.contains("timeout")
+            || error_msg.contains("timed out")
+            || error_msg.contains("ETIMEDOUT")
+        {
+            return "Operation timed out".to_string();
+        }
+        // Resource exhaustion
+        else if error_msg.contains("No space")
+            || error_msg.contains("full")
+            || error_msg.contains("exhausted")
+            || error_msg.contains("ENOMEM")
+            || error_msg.contains("ENOSPC")
+        {
+            return "System resource limit reached".to_string();
+        }
+
+        // Default generic error message for anything not caught above
         "Operation failed due to a system error".to_string()
     }
 
     /// Create a new IPC handler
     pub fn new() -> Self {
+        // Create a global rate limiter for all incoming connections
+        // Allow GLOBAL_RATE_LIMIT_CONNECTIONS connections per GLOBAL_RATE_LIMIT_PERIOD seconds
+        let global_quota = Quota::with_period(Duration::from_secs(GLOBAL_RATE_LIMIT_PERIOD))
+            .expect("Failed to create global rate limit period")
+            .allow_burst(
+                NonZeroU32::new(GLOBAL_RATE_LIMIT_CONNECTIONS)
+                    .expect("Failed to create global rate limit burst"),
+            );
+
+        let global_rate_limiter = Arc::new(RateLimiter::direct(global_quota));
+
         Self {
             active_clients: Arc::new(Mutex::new(HashMap::new())),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            global_rate_limiter,
         }
     }
 
@@ -261,10 +366,26 @@ impl IpcHandler {
         // Set of active client tasks
         let mut client_tasks = HashMap::new();
 
+        // Monitor for sleep/wake events
+        let mut sleep_stream = sleep_monitor();
+
         loop {
             tokio::select! {
+                // Handle sleep/wake events
+                Some(event) = sleep_stream.next() => {
+                    self.handle_sleep_event(event).await;
+                },
+
                 // Accept a new connection
                 accept_result = listener.accept() => {
+                    // Check global rate limit before accepting the connection
+                    if self.global_rate_limiter.check().is_err() {
+                        warn!("Global connection rate limit exceeded, temporarily rejecting new connections");
+                        // Sleep briefly to prevent CPU spinning on rate limit
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+
                     match accept_result {
                         Ok(connection) => {
                             // Get the client ID from the peer credentials
@@ -483,10 +604,26 @@ impl IpcHandler {
         // Set of active client tasks
         let mut client_tasks = HashMap::new();
 
+        // Monitor for sleep/wake events
+        let mut sleep_stream = sleep_monitor();
+
         loop {
             tokio::select! {
+                // Handle sleep/wake events
+                Some(event) = sleep_stream.next() => {
+                    self.handle_sleep_event(event).await;
+                },
+
                 // Accept a new connection
                 accept_result = listener.accept() => {
+                    // Check global rate limit before accepting the connection
+                    if self.global_rate_limiter.check().is_err() {
+                        warn!("Global connection rate limit exceeded, temporarily rejecting new connections");
+                        // Sleep briefly to prevent CPU spinning on rate limit
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+
                     match accept_result {
                         Ok(connection) => {
                             // Get the client ID from the peer credentials
@@ -747,6 +884,48 @@ impl IpcHandler {
         }
 
         Ok(())
+    }
+
+    /// Handle sleep/wake events
+    ///
+    /// Currently, this only handles wake events using SIGWINCH as a proxy.
+    /// Sleep detection is not yet implemented, but the infrastructure is in place
+    /// for future enhancement.
+    async fn handle_sleep_event(&self, event: SleepEvent) {
+        info!("Handling sleep event: {:?}", event);
+        let active_clients = self.active_clients.lock().unwrap().clone();
+        for (client_id, client_state) in active_clients {
+            if client_state.tunnel_active {
+                match event {
+                    SleepEvent::Sleep => {
+                        info!(
+                            "System is going to sleep, tearing down tunnel for client ID={}",
+                            client_id
+                        );
+                        if let Err(e) =
+                            Self::teardown_tunnel(client_id, self.active_clients.clone()).await
+                        {
+                            error!(
+                                "Failed to tear down tunnel on sleep for client ID={}: {}",
+                                client_id, e
+                            );
+                        }
+                    }
+                    SleepEvent::Wake => {
+                        info!(
+                            "System is waking up, restoring tunnel for client ID={}",
+                            client_id
+                        );
+                        // We need to get the tunnel setup request from somewhere to restore the tunnel
+                        // For now, we will just log a message
+                        warn!(
+                            "Tunnel restoration on wake is not yet implemented for client ID={}",
+                            client_id
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Handle a client connection
