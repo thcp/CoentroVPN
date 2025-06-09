@@ -7,7 +7,7 @@ use crate::messages::{ClientRequest, HelperResponse};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::io::{self, IoSlice, IoSliceMut};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -414,6 +414,33 @@ impl UnixSocketListener {
             auth_config,
         })
     }
+    
+    /// Create a new Unix Domain Socket listener from a raw file descriptor (for launchd socket activation)
+    pub fn from_raw_fd_with_auth(fd: RawFd, auth_config: AuthConfig) -> IpcResult<Self> {
+        // Create a UnixListener from the raw file descriptor
+        let listener = unsafe { 
+            // Create a std::os::unix::net::UnixListener from the raw fd
+            let std_listener = std::os::unix::net::UnixListener::from_raw_fd(fd);
+            
+            // Set the listener to non-blocking mode
+            std_listener.set_nonblocking(true).map_err(|e| {
+                IpcError::Connection(format!("Failed to set non-blocking mode: {}", e))
+            })?;
+            
+            // Convert to tokio's UnixListener
+            UnixListener::from_std(std_listener).map_err(|e| {
+                IpcError::Connection(format!("Failed to convert to tokio UnixListener: {}", e))
+            })?
+        };
+        
+        // For socket activation, we don't have a path to clean up
+        // The socket is managed by launchd
+        Ok(Self {
+            listener,
+            socket_path: String::from("<launchd-socket>"),
+            auth_config,
+        })
+    }
 
     /// Accept a new connection
     pub async fn accept(&self) -> IpcResult<UnixSocketConnection> {
@@ -516,7 +543,10 @@ impl UnixSocketListener {
 impl Drop for UnixSocketListener {
     fn drop(&mut self) {
         // Clean up the socket file when the listener is dropped
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Skip for launchd sockets which don't have a real path
+        if self.socket_path != "<launchd-socket>" {
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
     }
 }
 

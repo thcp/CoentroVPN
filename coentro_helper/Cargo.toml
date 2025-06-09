@@ -19,3 +19,4 @@ libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"
 governor = "0.6"
+# We'll use libc directly for socket activation instead of the launch crate

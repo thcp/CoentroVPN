@@ -43,6 +43,27 @@ This guide provides a quick overview for getting started. For detailed instructi
 
 ---
 
+## 🔧 Platform-Specific Features
+
+### macOS Integration
+
+CoentroVPN integrates with macOS's `launchd` service management system to provide a robust, secure, and reliable helper daemon experience. This integration includes:
+
+- **Socket Activation**: The helper daemon is launched on-demand when a client connects
+- **Automatic Startup**: The helper daemon starts automatically at system boot
+- **Crash Recovery**: The daemon restarts automatically if it crashes
+- **Proper Permissions**: Socket and file permissions are managed securely
+
+For detailed information, see our [macOS launchd Integration Guide](docs/MACOS_LAUNCHD_INTEGRATION.md).
+
+To install the helper daemon on macOS:
+
+```bash
+sudo ./scripts/install_helper_macos.sh
+```
+
+---
+
 ## ✨ Contributions
 
 We welcome contributions! Please follow our contribution guidelines (coming soon) and open issues or pull requests.

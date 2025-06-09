@@ -11,6 +11,7 @@ use governor::{Quota, RateLimiter};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
+use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -253,6 +254,228 @@ impl IpcHandler {
             "IPC handler listening on {}",
             socket_path.as_ref().display()
         );
+
+        // Channel for client tasks to signal completion
+        let (client_done_tx, mut client_done_rx) = mpsc::channel::<u32>(10);
+
+        // Set of active client tasks
+        let mut client_tasks = HashMap::new();
+
+        loop {
+            tokio::select! {
+                // Accept a new connection
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok(connection) => {
+                            // Get the client ID from the peer credentials
+                            let client_id = connection.peer_uid();
+                            info!("Accepted connection from client ID={} (UID={})", client_id, client_id);
+
+                // Create a rate limiter for the client
+                // Allow RATE_LIMIT_REQUESTS requests per RATE_LIMIT_PERIOD seconds
+                let quota = Quota::with_period(Duration::from_secs(RATE_LIMIT_PERIOD))
+                    .expect("Failed to create rate limit period")
+                    .allow_burst(NonZeroU32::new(RATE_LIMIT_REQUESTS).expect("Failed to create rate limit burst"));
+
+                let rate_limiter = Arc::new(RateLimiter::direct(quota));
+
+                // Create a new client state
+                let client_state = ClientState {
+                    pid: client_id,
+                    tunnel_active: false,
+                    active_interface: None,
+                    current_ip_config: None,
+                    tun_fd: None,
+                    rate_limiter,
+                };
+
+                            // Store the client state
+                            {
+                                let mut active_clients = self.active_clients.lock().unwrap();
+                                active_clients.insert(client_id, client_state);
+                            }
+
+                            // Clone necessary data for the client task
+                            let active_clients = Arc::clone(&self.active_clients);
+                            let client_done_tx = client_done_tx.clone();
+                            let version = self.version.clone();
+
+                            // Spawn a task to handle the client
+                            let handle = tokio::spawn(async move {
+                                if let Err(e) = Self::handle_client(
+                                    connection,
+                                    client_id,
+                                    active_clients,
+                                    version,
+                                ).await {
+                                    error!("Error handling client ID={}: {}", client_id, e);
+                                }
+
+                                // Signal that the client task is done
+                                if let Err(e) = client_done_tx.send(client_id).await {
+                                    error!("Failed to send client done signal: {}", e);
+                                }
+                            });
+
+                            // Store the client task handle
+                            client_tasks.insert(client_id, handle);
+                        },
+                        Err(e) => {
+                            error!("Failed to accept connection: {}", e);
+                        }
+                    }
+                },
+
+                // Handle client task completion
+                Some(client_id) = client_done_rx.recv() => {
+                    info!("Client ID={} task completed, checking for cleanup", client_id);
+
+                    // Check if the client had an active tunnel
+                    let client_state = {
+                        let active_clients = self.active_clients.lock().unwrap();
+                        active_clients.get(&client_id).cloned()
+                    };
+
+                    if let Some(state) = client_state {
+                        if state.tunnel_active {
+                            if let Some(interface_name) = &state.active_interface {
+                                info!("Client ID={} disconnected with active tunnel on interface {}, performing automatic cleanup", client_id, interface_name);
+
+                                // Create a network manager
+                                let network_manager = create_network_manager();
+
+                                // Attempt to destroy the TUN interface
+                                match network_manager.destroy_tun(interface_name).await {
+                                    Ok(()) => info!("Successfully cleaned up TUN interface {} for disconnected client ID={}", interface_name, client_id),
+                                    Err(e) => error!("Failed to clean up TUN interface {} for disconnected client ID={}: {}", interface_name, client_id, e),
+                                }
+                            } else {
+                                warn!("Client ID={} had active tunnel but no interface name", client_id);
+                            }
+                        } else {
+                            debug!("Client ID={} had no active tunnel, no cleanup needed", client_id);
+                        }
+                    } else {
+                        warn!("Client ID={} state not found", client_id);
+                    }
+
+                    // Remove the client state
+                    {
+                        let mut active_clients = self.active_clients.lock().unwrap();
+                        active_clients.remove(&client_id);
+                    }
+
+                    // Remove the client task handle
+                    client_tasks.remove(&client_id);
+                },
+
+                // Handle shutdown signal
+                _ = &mut shutdown_rx => {
+                    info!("Received shutdown signal, closing IPC handler");
+                    break;
+                }
+            }
+        }
+
+        // Wait for all client tasks to complete
+        for (id, handle) in client_tasks {
+            debug!("Waiting for client ID={} task to complete", id);
+            if let Err(e) = handle.await {
+                error!("Error waiting for client ID={} task to complete: {}", id, e);
+            }
+        }
+
+        info!("IPC handler shut down");
+        Ok(())
+    }
+
+    /// Run the IPC handler with a pre-existing socket file descriptor (for launchd socket activation)
+    pub async fn run_with_socket_fd(
+        &self,
+        socket_fd: RawFd,
+        mut shutdown_rx: oneshot::Receiver<()>,
+        allowed_uids: Vec<u32>,
+        allowed_gids: Option<Vec<u32>>,
+    ) -> anyhow::Result<()> {
+        // Get the current user's UID
+        let current_uid = unsafe { libc::getuid() };
+        info!("Helper daemon running as UID={}", current_uid);
+
+        // Create an authentication configuration
+        let mut auth_config = AuthConfig::new().allow_root(true); // Allow root by default
+
+        // If SUDO_UID is set, allow the original user
+        if let Ok(uid) = std::env::var("SUDO_UID") {
+            if let Ok(uid) = uid.parse::<u32>() {
+                info!("Allowing UID {} (from SUDO_UID)", uid);
+                auth_config = auth_config.allow_uid(uid);
+            }
+        } else {
+            // If not running with sudo, allow the current user
+            info!(
+                "Allowing current UID {} (not running with sudo)",
+                current_uid
+            );
+            auth_config = auth_config.allow_uid(current_uid);
+        }
+
+        // Allow UIDs from configuration
+        for uid in allowed_uids {
+            info!("Allowing UID {} (from configuration)", uid);
+            auth_config = auth_config.allow_uid(uid);
+        }
+
+        // Get the current user's GID
+        let current_gid = unsafe { libc::getgid() };
+        info!("Helper daemon running with GID={}", current_gid);
+
+        // If SUDO_GID is set, allow the original user's group
+        if let Ok(gid) = std::env::var("SUDO_GID") {
+            if let Ok(gid) = gid.parse::<u32>() {
+                info!("Allowing GID {} (from SUDO_GID)", gid);
+                auth_config = auth_config.allow_gid(gid);
+            }
+        } else {
+            // If not running with sudo, allow the current user's group
+            info!(
+                "Allowing current GID {} (not running with sudo)",
+                current_gid
+            );
+            auth_config = auth_config.allow_gid(current_gid);
+        }
+
+        // Allow GIDs from configuration
+        if let Some(gids) = allowed_gids {
+            for gid in gids {
+                info!("Allowing GID {} (from configuration)", gid);
+                auth_config = auth_config.allow_gid(gid);
+            }
+        }
+
+        // Try to create a dedicated group for the socket
+        // This is a common group name for VPN-related operations
+        let vpn_group_name = "coentrovpn";
+        let vpn_group_gid = match get_group_id(vpn_group_name) {
+            Some(gid) => {
+                info!("Found existing group '{}' with GID={}", vpn_group_name, gid);
+                auth_config = auth_config.allow_gid(gid);
+                Some(gid)
+            }
+            None => {
+                info!(
+                    "Group '{}' not found, socket will use default group",
+                    vpn_group_name
+                );
+                None
+            }
+        };
+
+        // Create the Unix Domain Socket listener with authentication from the existing socket
+        info!("Using socket provided by launchd (fd: {})", socket_fd);
+        let listener = UnixSocketListener::from_raw_fd_with_auth(socket_fd, auth_config)
+            .map_err(|e| anyhow::anyhow!("Failed to create listener from socket fd: {}", e))?;
+
+        info!("IPC handler listening on socket provided by launchd");
 
         // Channel for client tasks to signal completion
         let (client_done_tx, mut client_done_rx) = mpsc::channel::<u32>(10);
