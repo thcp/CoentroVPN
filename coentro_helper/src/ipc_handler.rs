@@ -201,7 +201,7 @@ impl IpcHandler {
         // Try to create a dedicated group for the socket
         // This is a common group name for VPN-related operations
         let vpn_group_name = "coentrovpn";
-        let vpn_group_gid = match get_group_id(vpn_group_name) {
+        let _vpn_group_gid = match get_group_id(vpn_group_name) {
             Some(gid) => {
                 info!("Found existing group '{}' with GID={}", vpn_group_name, gid);
                 auth_config = auth_config.allow_gid(gid);
@@ -239,7 +239,7 @@ impl IpcHandler {
 
         // If we found a dedicated VPN group, set the socket's group ownership
         #[cfg(unix)]
-        if let Some(gid) = vpn_group_gid {
+        if let Some(gid) = _vpn_group_gid {
             use std::os::unix::fs::chown;
             info!(
                 "Setting socket group ownership to GID={} ({})",
@@ -455,7 +455,7 @@ impl IpcHandler {
         // Try to create a dedicated group for the socket
         // This is a common group name for VPN-related operations
         let vpn_group_name = "coentrovpn";
-        let vpn_group_gid = match get_group_id(vpn_group_name) {
+        let _vpn_group_gid = match get_group_id(vpn_group_name) {
             Some(gid) => {
                 info!("Found existing group '{}' with GID={}", vpn_group_name, gid);
                 auth_config = auth_config.allow_gid(gid);

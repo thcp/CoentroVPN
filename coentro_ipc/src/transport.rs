@@ -414,25 +414,25 @@ impl UnixSocketListener {
             auth_config,
         })
     }
-    
+
     /// Create a new Unix Domain Socket listener from a raw file descriptor (for launchd socket activation)
     pub fn from_raw_fd_with_auth(fd: RawFd, auth_config: AuthConfig) -> IpcResult<Self> {
         // Create a UnixListener from the raw file descriptor
-        let listener = unsafe { 
+        let listener = unsafe {
             // Create a std::os::unix::net::UnixListener from the raw fd
             let std_listener = std::os::unix::net::UnixListener::from_raw_fd(fd);
-            
+
             // Set the listener to non-blocking mode
             std_listener.set_nonblocking(true).map_err(|e| {
                 IpcError::Connection(format!("Failed to set non-blocking mode: {}", e))
             })?;
-            
+
             // Convert to tokio's UnixListener
             UnixListener::from_std(std_listener).map_err(|e| {
                 IpcError::Connection(format!("Failed to convert to tokio UnixListener: {}", e))
             })?
         };
-        
+
         // For socket activation, we don't have a path to clean up
         // The socket is managed by launchd
         Ok(Self {
