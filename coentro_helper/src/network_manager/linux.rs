@@ -22,6 +22,7 @@ pub struct LinuxNetworkManager {
 
 impl LinuxNetworkManager {
     /// Create a new Linux Network Manager
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             original_dns: None,

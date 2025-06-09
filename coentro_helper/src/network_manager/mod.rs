@@ -6,9 +6,13 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
-// Import the Linux implementation
+// Import platform-specific implementations
 mod linux;
-pub use linux::LinuxNetworkManager;
+mod macos;
+#[cfg(target_os = "linux")]
+use linux::LinuxNetworkManager;
+#[cfg(target_os = "macos")]
+pub use macos::MacOsNetworkManager;
 
 /// Result type for network operations
 pub type NetworkResult<T> = Result<T, NetworkError>;
@@ -122,17 +126,19 @@ pub trait NetworkManager: Send + Sync {
 /// Create a platform-specific network manager
 ///
 /// This function detects the platform and returns the appropriate implementation.
-/// For now, we only support Linux.
-pub fn create_network_manager() -> LinuxNetworkManager {
+pub fn create_network_manager() -> Box<dyn NetworkManager> {
     #[cfg(target_os = "linux")]
     {
-        LinuxNetworkManager::new()
+        Box::new(LinuxNetworkManager::new())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        // For non-Linux platforms, we still return a Linux implementation
-        // This will be replaced with platform-specific implementations in the future
-        LinuxNetworkManager::new()
+        Box::new(MacOsNetworkManager::new())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        panic!("Unsupported platform for network manager");
     }
 }

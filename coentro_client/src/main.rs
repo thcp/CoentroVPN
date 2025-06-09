@@ -176,12 +176,13 @@ async fn main() -> anyhow::Result<()> {
 
                 info!("QUIC connection established, starting tunnel...");
 
-                // Create a TUN handler
-                // Note: In a real implementation, we would use the file descriptor from the helper daemon
-                // For now, we'll create a mock TUN device for testing purposes
-                info!("Creating mock TUN device for testing");
+                // Create a TUN handler using the file descriptor received from the helper daemon
+                info!(
+                    "Creating TUN handler with file descriptor {}",
+                    tunnel_details.fd
+                );
                 let tun_handler = TunHandler::new(
-                    0, // Mock file descriptor
+                    tunnel_details.fd, // Real file descriptor from the helper daemon
                     tunnel_details.interface_name,
                     tunnel_details.assigned_ip,
                     tunnel_details.assigned_mtu,

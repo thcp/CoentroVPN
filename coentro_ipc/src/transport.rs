@@ -6,8 +6,8 @@
 use crate::messages::{ClientRequest, HelperResponse};
 use async_trait::async_trait;
 use std::collections::HashSet;
-use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::io::{self, IoSlice, IoSliceMut};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,6 +20,10 @@ use nix::sys::socket::UnixCredentials;
 
 #[cfg(target_os = "macos")]
 use libc::xucred as UnixCredentials;
+
+// Platform-specific imports for file descriptor passing
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use nix::sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags};
 
 /// Result type for IPC operations
 pub type IpcResult<T> = Result<T, IpcError>;
@@ -50,6 +54,10 @@ pub enum IpcError {
     /// Timeout error
     #[error("Timeout error: {0}")]
     Timeout(String),
+
+    /// File descriptor error
+    #[error("File descriptor error: {0}")]
+    FileDescriptor(String),
 }
 
 /// Trait for IPC transport implementations
@@ -135,6 +143,42 @@ impl UnixSocketTransport {
 
         Ok(data)
     }
+
+    /// Receive a file descriptor from the Unix socket
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub async fn receive_fd(&mut self) -> IpcResult<RawFd> {
+        // Get the raw file descriptor
+        let raw_fd = self.stream.as_raw_fd();
+
+        // Create a buffer for the message
+        let mut buf = [0u8; 1];
+        let mut cmsg_buffer = vec![0u8; 64];
+
+        // Prepare the IO vector
+        let mut iovec = [IoSliceMut::new(&mut buf)];
+
+        // Receive the message with the file descriptor
+        let msg = recvmsg::<()>(
+            raw_fd,
+            &mut iovec,
+            Some(&mut cmsg_buffer),
+            MsgFlags::empty(),
+        )
+        .map_err(|e| IpcError::FileDescriptor(format!("Failed to receive message: {}", e)))?;
+
+        // Extract the file descriptor from the control message
+        for cmsg in msg.cmsgs() {
+            if let ControlMessageOwned::ScmRights(fds) = cmsg {
+                if !fds.is_empty() {
+                    return Ok(fds[0]);
+                }
+            }
+        }
+
+        Err(IpcError::FileDescriptor(
+            "No file descriptor received".to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -148,7 +192,18 @@ impl IpcTransport for UnixSocketTransport {
     async fn receive_response(&mut self) -> IpcResult<HelperResponse> {
         let data = self.receive_message().await?;
 
-        let response = bincode::deserialize(&data).map_err(IpcError::Serialization)?;
+        let mut response: HelperResponse =
+            bincode::deserialize(&data).map_err(IpcError::Serialization)?;
+
+        // If the response is TunnelReady, we need to receive the file descriptor
+        if let HelperResponse::TunnelReady(ref mut details) = response {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                // Receive the file descriptor
+                let fd = self.receive_fd().await?;
+                details.fd = fd;
+            }
+        }
 
         Ok(response)
     }
@@ -360,6 +415,33 @@ impl UnixSocketListener {
         })
     }
 
+    /// Create a new Unix Domain Socket listener from a raw file descriptor (for launchd socket activation)
+    pub fn from_raw_fd_with_auth(fd: RawFd, auth_config: AuthConfig) -> IpcResult<Self> {
+        // Create a UnixListener from the raw file descriptor
+        let listener = unsafe {
+            // Create a std::os::unix::net::UnixListener from the raw fd
+            let std_listener = std::os::unix::net::UnixListener::from_raw_fd(fd);
+
+            // Set the listener to non-blocking mode
+            std_listener.set_nonblocking(true).map_err(|e| {
+                IpcError::Connection(format!("Failed to set non-blocking mode: {}", e))
+            })?;
+
+            // Convert to tokio's UnixListener
+            UnixListener::from_std(std_listener).map_err(|e| {
+                IpcError::Connection(format!("Failed to convert to tokio UnixListener: {}", e))
+            })?
+        };
+
+        // For socket activation, we don't have a path to clean up
+        // The socket is managed by launchd
+        Ok(Self {
+            listener,
+            socket_path: String::from("<launchd-socket>"),
+            auth_config,
+        })
+    }
+
     /// Accept a new connection
     pub async fn accept(&self) -> IpcResult<UnixSocketConnection> {
         let (stream, _) = self
@@ -461,7 +543,10 @@ impl UnixSocketListener {
 impl Drop for UnixSocketListener {
     fn drop(&mut self) {
         // Clean up the socket file when the listener is dropped
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Skip for launchd sockets which don't have a real path
+        if self.socket_path != "<launchd-socket>" {
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
     }
 }
 
@@ -523,6 +608,37 @@ impl UnixSocketConnection {
             Ok(result) => result.map_err(IpcError::Io)?,
             Err(_) => return Err(IpcError::Timeout("Write operation timed out".to_string())),
         };
+
+        // If the response is TunnelReady, we need to send the file descriptor
+        if let HelperResponse::TunnelReady(ref details) = response {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                // Send the file descriptor
+                self.send_fd(details.fd).map_err(|e| {
+                    IpcError::FileDescriptor(format!("Failed to send file descriptor: {}", e))
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send a file descriptor over the Unix socket
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn send_fd(&self, fd: RawFd) -> io::Result<()> {
+        // Get the raw file descriptor
+        let raw_fd = self.stream.as_raw_fd();
+
+        // Create a dummy message to send along with the file descriptor
+        let dummy_data = [0u8; 1];
+        let iov = [IoSlice::new(&dummy_data)];
+
+        // Create the control message with the file descriptor
+        let fd_array = [fd];
+        let cmsg = [ControlMessage::ScmRights(&fd_array)];
+
+        // Send the message with the file descriptor
+        sendmsg::<()>(raw_fd, &iov, &cmsg, MsgFlags::empty(), None)?;
 
         Ok(())
     }
