@@ -40,6 +40,94 @@ pub struct TunnelSetupRequest {
     pub mtu: Option<u32>,
 }
 
+impl TunnelSetupRequest {
+    /// Validate the request parameters
+    pub fn validate(&self) -> Result<(), String> {
+        // Validate client_id
+        if self.client_id.is_empty() {
+            return Err("Client ID cannot be empty".to_string());
+        }
+        if self.client_id.len() > 64 {
+            return Err("Client ID is too long (max 64 characters)".to_string());
+        }
+
+        // Validate requested_ip_config if provided
+        if let Some(ip_config) = &self.requested_ip_config {
+            if !Self::is_valid_cidr(ip_config) {
+                return Err(format!("Invalid IP configuration: {}", ip_config));
+            }
+        }
+
+        // Validate routes_to_add
+        for route in &self.routes_to_add {
+            if !Self::is_valid_cidr(route) {
+                return Err(format!("Invalid route: {}", route));
+            }
+        }
+
+        // Validate dns_servers if provided
+        if let Some(dns_servers) = &self.dns_servers {
+            for dns in dns_servers {
+                if !Self::is_valid_ip(dns) {
+                    return Err(format!("Invalid DNS server IP: {}", dns));
+                }
+            }
+        }
+
+        // Validate mtu if provided
+        if let Some(mtu) = self.mtu {
+            // MTU should be between reasonable bounds
+            // 1280 is the minimum for IPv6, 9000 is a common jumbo frame size
+            if !(1280..=9000).contains(&mtu) {
+                return Err(format!(
+                    "Invalid MTU value: {}. Must be between 1280 and 9000",
+                    mtu
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a string is a valid CIDR notation
+    fn is_valid_cidr(cidr: &str) -> bool {
+        // Split into IP and prefix
+        let parts: Vec<&str> = cidr.split('/').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+
+        // Validate IP part
+        if !Self::is_valid_ip(parts[0]) {
+            return false;
+        }
+
+        // Validate prefix part
+        if let Ok(prefix) = parts[1].parse::<u8>() {
+            // IPv4 prefix should be 0-32, IPv6 prefix should be 0-128
+            // For simplicity, we'll allow 0-128 for both
+            prefix <= 128
+        } else {
+            false
+        }
+    }
+
+    /// Check if a string is a valid IP address
+    fn is_valid_ip(ip: &str) -> bool {
+        // Try to parse as IPv4
+        if ip.parse::<std::net::Ipv4Addr>().is_ok() {
+            return true;
+        }
+
+        // Try to parse as IPv6
+        if ip.parse::<std::net::Ipv6Addr>().is_ok() {
+            return true;
+        }
+
+        false
+    }
+}
+
 /// Response sent from the helper daemon to the client
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum HelperResponse {

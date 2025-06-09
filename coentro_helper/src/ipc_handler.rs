@@ -7,10 +7,13 @@ use coentro_ipc::messages::{
     ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest,
 };
 use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
+use governor::{Quota, RateLimiter};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 /// Get the group ID (GID) for a given group name
@@ -44,6 +47,10 @@ pub struct IpcHandler {
     version: String,
 }
 
+/// Rate limit configuration
+const RATE_LIMIT_REQUESTS: u32 = 30; // Maximum number of requests
+const RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds
+
 /// State for an active client
 #[derive(Clone)]
 struct ClientState {
@@ -58,9 +65,45 @@ struct ClientState {
     current_ip_config: Option<String>,
     /// File descriptor for the TUN device, if any
     tun_fd: Option<i32>,
+    /// Rate limiter for this client
+    #[allow(dead_code)] // Clone trait requires this, but we use Arc internally
+    rate_limiter: Arc<
+        RateLimiter<
+            governor::state::NotKeyed,
+            governor::state::InMemoryState,
+            governor::clock::DefaultClock,
+        >,
+    >,
 }
 
 impl IpcHandler {
+    /// Sanitize error messages to prevent information leakage
+    fn sanitize_error_message(error_msg: &str) -> String {
+        // Check for common patterns that might contain sensitive information
+        if error_msg.contains("Permission denied") {
+            return "Operation not permitted due to insufficient privileges".to_string();
+        } else if error_msg.contains("/etc")
+            || error_msg.contains("/var")
+            || error_msg.contains("/usr")
+        {
+            return "System configuration error".to_string();
+        } else if error_msg.contains("No such file") || error_msg.contains("not found") {
+            return "Required resource not available".to_string();
+        } else if error_msg.contains("Device") || error_msg.contains("interface") {
+            return "Network device error".to_string();
+        } else if error_msg.contains("route") || error_msg.contains("routing") {
+            return "Routing configuration error".to_string();
+        } else if error_msg.contains("DNS") || error_msg.contains("resolv.conf") {
+            return "DNS configuration error".to_string();
+        } else if error_msg.contains("Invalid") || error_msg.contains("invalid") {
+            // Keep validation errors as they are generally safe and helpful
+            return error_msg.to_string();
+        }
+
+        // Default generic error message
+        "Operation failed due to a system error".to_string()
+    }
+
     /// Create a new IPC handler
     pub fn new() -> Self {
         Self {
@@ -227,6 +270,14 @@ impl IpcHandler {
                             let client_id = connection.peer_uid();
                             info!("Accepted connection from client ID={} (UID={})", client_id, client_id);
 
+                // Create a rate limiter for the client
+                // Allow RATE_LIMIT_REQUESTS requests per RATE_LIMIT_PERIOD seconds
+                let quota = Quota::with_period(Duration::from_secs(RATE_LIMIT_PERIOD))
+                    .expect("Failed to create rate limit period")
+                    .allow_burst(NonZeroU32::new(RATE_LIMIT_REQUESTS).expect("Failed to create rate limit burst"));
+
+                let rate_limiter = Arc::new(RateLimiter::direct(quota));
+
                 // Create a new client state
                 let client_state = ClientState {
                     pid: client_id,
@@ -234,6 +285,7 @@ impl IpcHandler {
                     active_interface: None,
                     current_ip_config: None,
                     tun_fd: None,
+                    rate_limiter,
                 };
 
                             // Store the client state
@@ -342,6 +394,14 @@ impl IpcHandler {
         setup: TunnelSetupRequest,
         active_clients: Arc<Mutex<HashMap<u32, ClientState>>>,
     ) -> anyhow::Result<TunnelReadyDetails> {
+        // Validate the request parameters
+        if let Err(validation_error) = setup.validate() {
+            return Err(anyhow::anyhow!(
+                "Invalid request parameters: {}",
+                validation_error
+            ));
+        }
+
         // Check if the client already has an active tunnel
         let client_state = {
             let active_clients = active_clients.lock().unwrap();
@@ -480,6 +540,21 @@ impl IpcHandler {
             client_id, peer_uid, peer_gid
         );
 
+        // Get the client's rate limiter
+        let rate_limiter = {
+            let active_clients = active_clients.lock().unwrap();
+            if let Some(state) = active_clients.get(&client_id) {
+                state.rate_limiter.clone()
+            } else {
+                // This should never happen, but just in case
+                error!(
+                    "Client ID={} state not found when getting rate limiter",
+                    client_id
+                );
+                return Err(anyhow::anyhow!("Client state not found"));
+            }
+        };
+
         loop {
             // Receive a request from the client
             let request = match connection.receive_request().await {
@@ -504,6 +579,26 @@ impl IpcHandler {
                 "Received request from client ID={}: {:?}",
                 client_id, request
             );
+
+            // Check rate limit before processing the request
+            if rate_limiter.check().is_err() {
+                warn!("Rate limit exceeded for client ID={}", client_id);
+
+                // Send rate limit error response
+                let response = HelperResponse::Error(
+                    "Rate limit exceeded. Please try again later.".to_string(),
+                );
+                if let Err(e) = connection.send_response(&response).await {
+                    error!(
+                        "Error sending rate limit response to client ID={}: {}",
+                        client_id, e
+                    );
+                    return Err(anyhow::anyhow!("Failed to send rate limit response: {}", e));
+                }
+
+                // Continue to the next iteration of the loop
+                continue;
+            }
 
             // Process the request
             let response = match request {
@@ -542,8 +637,15 @@ impl IpcHandler {
                             HelperResponse::TunnelReady(details)
                         }
                         Err(e) => {
+                            // Log the detailed error for debugging
                             error!("Failed to set up tunnel for client ID={}: {}", client_id, e);
-                            HelperResponse::Error(format!("Failed to set up tunnel: {}", e))
+
+                            // Send a sanitized error message to the client
+                            let sanitized_error = Self::sanitize_error_message(&e.to_string());
+                            HelperResponse::Error(format!(
+                                "Failed to set up tunnel: {}",
+                                sanitized_error
+                            ))
                         }
                     }
                 }
@@ -555,11 +657,18 @@ impl IpcHandler {
                             HelperResponse::Success
                         }
                         Err(e) => {
+                            // Log the detailed error for debugging
                             error!(
                                 "Failed to tear down tunnel for client ID={}: {}",
                                 client_id, e
                             );
-                            HelperResponse::Error(format!("Failed to tear down tunnel: {}", e))
+
+                            // Send a sanitized error message to the client
+                            let sanitized_error = Self::sanitize_error_message(&e.to_string());
+                            HelperResponse::Error(format!(
+                                "Failed to tear down tunnel: {}",
+                                sanitized_error
+                            ))
                         }
                     }
                 }
