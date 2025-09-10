@@ -114,15 +114,22 @@ impl TunnelSetupRequest {
             return false;
         }
 
-        // Validate IP part
-        if !Self::is_valid_ip(parts[0]) {
+        let ip_part = parts[0].trim();
+
+        // Special case: allow default routes 0.0.0.0/0 and ::/0
+        if (ip_part == "0.0.0.0" || ip_part == "::") && parts[1].trim() == "0" {
+            return true;
+        }
+
+        // Validate IP part (non-default)
+        if !Self::is_valid_ip(ip_part) {
             return false;
         }
 
         // Validate prefix part
         if let Ok(prefix) = parts[1].parse::<u8>() {
             // Check if the prefix is valid for the IP version
-            let is_ipv4 = parts[0].parse::<Ipv4Addr>().is_ok();
+            let is_ipv4 = ip_part.parse::<Ipv4Addr>().is_ok();
 
             if is_ipv4 {
                 // IPv4 prefix should be 0-32

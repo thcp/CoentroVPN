@@ -10,6 +10,7 @@ use std::os::unix::io::{FromRawFd, RawFd};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
+use shared_utils::transport::Connection as TransportConnection;
 
 /// Maximum packet size for TUN interface
 const MAX_PACKET_SIZE: usize = 1500;
@@ -172,6 +173,7 @@ pub trait PacketProcessor: Send + Sync {
 }
 
 /// Start a TUN-to-QUIC tunnel with the given packet processor
+#[allow(dead_code)]
 pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
     mut tun_handler: TunHandler,
     quic_stream_rx: impl AsyncRead + Unpin + Send + 'static,
@@ -306,4 +308,84 @@ impl PacketProcessor for PassThroughProcessor {
     async fn process_quic_to_tun(&self, packet: &[u8]) -> io::Result<Vec<u8>> {
         Ok(packet.to_vec())
     }
+}
+
+/// Start a TUN-to-transport bridge using a shared_utils transport Connection
+pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
+    mut tun_handler: TunHandler,
+    connection: Box<dyn TransportConnection + Send + Sync>,
+    processor: Arc<P>,
+    buffer_size: usize,
+) -> io::Result<()> {
+    // Create packet channels
+    let (quic_to_tun_tx, mut tun_to_quic_rx) = tun_handler.create_packet_channels(buffer_size);
+
+    // Start TUN processing
+    let tun_task = tokio::spawn(async move {
+        if let Err(e) = tun_handler.start_processing().await {
+            error!("TUN processing error: {}", e);
+        }
+    });
+
+    // Task: read from transport and forward to TUN
+    let processor_clone = Arc::clone(&processor);
+    let connection_arc = Arc::new(Mutex::new(connection));
+    let conn_reader = Arc::clone(&connection_arc);
+    let read_task = tokio::spawn(async move {
+        loop {
+            let mut conn = conn_reader.lock().await;
+            match conn.recv_data().await {
+                Ok(Some(data)) => {
+                    debug!("Transport->TUN received {} bytes", data.len());
+                    match processor_clone.process_quic_to_tun(&data).await {
+                        Ok(pkt) => {
+                            if let Err(e) = quic_to_tun_tx.send(pkt).await {
+                                error!("Failed to send packet to TUN: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error processing transport->TUN packet: {}", e);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    info!("Transport closed by peer");
+                    break;
+                }
+                Err(e) => {
+                    error!("Transport recv error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Task: read from TUN and send to transport
+    let conn_writer = Arc::clone(&connection_arc);
+    let write_task = tokio::spawn(async move {
+        while let Some(packet) = tun_to_quic_rx.recv().await {
+            debug!("TUN->Transport sending {} bytes", packet.len());
+            match processor.process_tun_to_quic(&packet).await {
+                Ok(pkt) => {
+                    let mut conn = conn_writer.lock().await;
+                    if let Err(e) = conn.send_data(&pkt).await {
+                        error!("Transport send error: {}", e);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("Error processing TUN->transport packet: {}", e);
+                }
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = tun_task => warn!("TUN task completed"),
+        _ = read_task => warn!("Transport read task completed"),
+        _ = write_task => warn!("Transport write task completed"),
+    }
+
+    Ok(())
 }

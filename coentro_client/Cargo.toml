@@ -7,7 +7,7 @@ description = "Unprivileged client for CoentroVPN split daemon architecture"
 [dependencies]
 coentro_ipc = { path = "../coentro_ipc" }
 shared_utils = { path = "../shared_utils" }
-tokio = { version = "1.28", features = ["full"] }
+tokio = { version = "1.32.0", features = ["full"] }
 log = "0.4"
 env_logger = "0.10"
 thiserror = "1.0"

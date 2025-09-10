@@ -8,7 +8,9 @@ set -e
 HELPER_NAME="coentro_helper"
 INSTALL_DIR="/usr/local/bin"
 SOCKET_DIR="/var/run/coentrovpn"
-LOG_FILE="/var/log/coentrovpn-helper.log"
+# Logging
+LOG_DIR="/var/log/coentrovpn"
+LOG_FILE="${LOG_DIR}/coentrovpn-helper.log"
 
 # Colors for output
 RED='\033[0;31m'
@@ -100,6 +102,11 @@ fi
 echo "Creating socket directory: ${SOCKET_DIR}"
 mkdir -p "${SOCKET_DIR}"
 chmod 755 "${SOCKET_DIR}"  # rwxr-xr-x - Executable by all, but only writable by owner
+
+# Create the log directory
+echo "Creating log directory: ${LOG_DIR}"
+mkdir -p "${LOG_DIR}"
+chmod 755 "${LOG_DIR}"
 
 # Install the helper daemon
 echo "Installing helper daemon to ${INSTALL_DIR}"

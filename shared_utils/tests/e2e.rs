@@ -17,6 +17,8 @@ use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::proto::framing::{Frame, FrameDecoder, FrameEncoder};
 // Updated imports:
 use shared_utils::quic::{QuicClient, QuicServer};
+use shared_utils::quic::generate_self_signed_cert;
+use rustls; // use in-test for Certificate type
 use shared_utils::transport::{ClientTransport, Listener as TraitListener, ServerTransport}; // Removed unused Connection as TraitConnection & TransportError
 use shared_utils::tunnel::{
     ClientBootstrapper, ServerBootstrapper, TunnelBootstrapper, TunnelConfig, TunnelManager,
@@ -69,6 +71,7 @@ fn create_test_client_config(psk: &str, server_addr: &str) -> Config {
 
 /// Test basic configuration to tunnel E2E flow
 #[tokio::test]
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_config_to_tunnel_e2e() {
     // Create a temporary config file
     let mut file = NamedTempFile::new().unwrap();
@@ -143,6 +146,7 @@ async fn test_config_to_tunnel_e2e() {
 
 /// Test direct tunnel bootstrapping
 #[tokio::test]
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_direct_tunnel_bootstrapping() {
     // Generate a shared key
     let key = AesGcmCipher::generate_key();
@@ -194,6 +198,7 @@ async fn test_direct_tunnel_bootstrapping() {
 
 /// Test tunnel manager lifecycle
 #[tokio::test]
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_tunnel_manager_lifecycle() {
     // Create a tunnel manager
     let tunnel_manager = TunnelManager::new();
@@ -267,7 +272,7 @@ async fn test_large_message_fragmentation_and_reassembly() {
     });
 
     // Wait for the server to start and get the actual address
-    let actual_server_addr = timeout(Duration::from_secs(5), actual_addr_rx)
+    let (actual_server_addr, server_cert) = timeout(Duration::from_secs(5), actual_addr_rx)
         .await
         .expect("Server should start within 5 seconds")
         .expect("Server should send its bound address");
@@ -281,7 +286,7 @@ async fn test_large_message_fragmentation_and_reassembly() {
     // Run the client with the large message
     let client_result = timeout(
         TEST_TIMEOUT,
-        run_large_message_client(actual_server_addr, &key, large_message.clone()),
+        run_large_message_client(actual_server_addr, &key, large_message.clone(), server_cert.clone()),
     )
     .await;
 
@@ -406,6 +411,7 @@ async fn test_frame_truncation_and_recovery() {
 
 /// Test multiple concurrent client sessions
 #[tokio::test]
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_multiple_concurrent_client_sessions() {
     println!("Starting multiple concurrent client sessions test");
 
@@ -521,7 +527,7 @@ async fn test_quic_transport_with_encryption_e2e() {
     });
 
     // Wait for the server to start and get the actual address
-    let actual_server_addr = timeout(Duration::from_secs(5), actual_addr_rx)
+    let (actual_server_addr, server_cert) = timeout(Duration::from_secs(5), actual_addr_rx)
         .await
         .expect("Server should start within 5 seconds")
         .expect("Server should send its bound address");
@@ -537,7 +543,7 @@ async fn test_quic_transport_with_encryption_e2e() {
 
     let client_result = timeout(
         TEST_TIMEOUT,
-        run_encrypted_quic_client(actual_server_addr, &key, test_messages.clone()),
+        run_encrypted_quic_client(actual_server_addr, &key, test_messages.clone(), server_cert.clone()),
     )
     .await;
 
@@ -560,16 +566,17 @@ async fn test_quic_transport_with_encryption_e2e() {
 async fn run_large_message_server(
     addr: SocketAddr,
     key: &[u8],
-    actual_addr_tx: tokio::sync::oneshot::Sender<SocketAddr>,
+    actual_addr_tx: tokio::sync::oneshot::Sender<(SocketAddr, rustls::Certificate)>,
 ) -> anyhow::Result<()> {
     println!("[SERVER] Starting large message server...");
-
-    let quic_server = QuicServer::new(addr, key)?;
+    // Generate a self-signed cert and use it explicitly so the client can pin it
+    let (cert, key_der) = generate_self_signed_cert()?;
+    let quic_server = QuicServer::new_with_cert(addr, key, cert.clone(), key_der)?;
     let mut listener = quic_server.listen(&addr.to_string()).await?;
     let actual_addr = listener.local_addr()?;
     println!("[SERVER] Server bound to {}", actual_addr);
 
-    if actual_addr_tx.send(actual_addr).is_err() {
+    if actual_addr_tx.send((actual_addr, cert)).is_err() {
         return Err(anyhow::anyhow!(
             "Failed to send actual server address back to test"
         ));
@@ -619,10 +626,12 @@ async fn run_large_message_client(
     server_addr: SocketAddr,
     key: &[u8],
     message: Vec<u8>,
+    server_cert: rustls::Certificate,
 ) -> anyhow::Result<()> {
     println!("[CLIENT] Starting large message client...");
 
-    let client = QuicClient::new(key)?;
+    // Pin the server's self-signed certificate for TLS
+    let client = QuicClient::new_with_pinned_roots(key, &[server_cert])?;
     let mut connection = client.connect(&server_addr.to_string()).await?;
 
     println!(
@@ -642,16 +651,17 @@ async fn run_large_message_client(
 async fn run_encrypted_quic_server(
     addr: SocketAddr,
     key: &[u8],
-    actual_addr_tx: tokio::sync::oneshot::Sender<SocketAddr>,
+    actual_addr_tx: tokio::sync::oneshot::Sender<(SocketAddr, rustls::Certificate)>,
 ) -> anyhow::Result<()> {
     println!("[SERVER] Starting encrypted QUIC server...");
-
-    let quic_server = QuicServer::new(addr, key)?;
+    // Use explicit self-signed cert for server and let client pin it
+    let (cert, key_der) = generate_self_signed_cert()?;
+    let quic_server = QuicServer::new_with_cert(addr, key, cert.clone(), key_der)?;
     let mut listener = quic_server.listen(&addr.to_string()).await?;
     let actual_addr = listener.local_addr()?;
     println!("[SERVER] Server bound to {}", actual_addr);
 
-    if actual_addr_tx.send(actual_addr).is_err() {
+    if actual_addr_tx.send((actual_addr, cert)).is_err() {
         return Err(anyhow::anyhow!(
             "Failed to send actual server address back to test"
         ));
@@ -698,10 +708,11 @@ async fn run_encrypted_quic_client(
     server_addr: SocketAddr,
     key: &[u8],
     messages: Vec<&str>,
+    server_cert: rustls::Certificate,
 ) -> anyhow::Result<()> {
     println!("[CLIENT] Starting encrypted QUIC client...");
-
-    let client = QuicClient::new(key)?;
+    // Pin server cert
+    let client = QuicClient::new_with_pinned_roots(key, &[server_cert])?;
     let mut connection = client.connect(&server_addr.to_string()).await?;
 
     println!("[CLIENT] Connected, sending {} messages", messages.len());

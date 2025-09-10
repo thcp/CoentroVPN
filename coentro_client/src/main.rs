@@ -7,9 +7,10 @@
 mod helper_comms;
 mod tun_handler;
 
-use crate::tun_handler::{start_tun_quic_tunnel, PassThroughProcessor, TunHandler};
+use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
 use clap::{Parser, Subcommand};
 use log::{debug, error, info, LevelFilter};
+use shared_utils::transport::ClientTransport;
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -170,9 +171,23 @@ async fn main() -> anyhow::Result<()> {
             if let Some(server_addr) = server {
                 info!("Connecting to QUIC server at {}", server_addr);
 
-                // For now, we'll just use a mock connection since we're not actually implementing
-                // the full QUIC client functionality in this PR
-                let (quic_stream_rx, quic_stream_tx) = (tokio::io::empty(), tokio::io::sink());
+                // Initialize QUIC client (secure-by-default TLS, encryption key for payload)
+                let key = shared_utils::AesGcmCipher::generate_key();
+                let quic_client = match shared_utils::QuicClient::new(&key) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to initialize QUIC client: {}", e);
+                        return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
+                    }
+                };
+
+                let connection = match quic_client.connect(&server_addr).await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        error!("Failed to connect to QUIC server {}: {}", server_addr, e);
+                        return Err(anyhow::anyhow!("Failed to connect to QUIC server: {}", e));
+                    }
+                };
 
                 info!("QUIC connection established, starting tunnel...");
 
@@ -191,14 +206,13 @@ async fn main() -> anyhow::Result<()> {
                 // Create a packet processor
                 let processor = Arc::new(PassThroughProcessor);
 
-                // Start the TUN-QUIC tunnel
+                // Start the TUN-to-transport bridge over QUIC
                 let tunnel_task = tokio::spawn(async move {
-                    if let Err(e) = start_tun_quic_tunnel(
+                    if let Err(e) = start_tun_transport_bridge(
                         tun_handler,
-                        quic_stream_rx,
-                        quic_stream_tx,
+                        connection,
                         processor,
-                        100, // Buffer size
+                        100,
                     )
                     .await
                     {

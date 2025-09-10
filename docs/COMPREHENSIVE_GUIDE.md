@@ -86,6 +86,8 @@ This section covers the installation and testing procedures specific to macOS.
         -   Verify IP address: `ifconfig utunX` (replace `utunX` with the actual device)
         -   Teardown Tunnel: `./target/debug/coentro_client teardown-tunnel`
 
+For a step-by-step macOS validation guide (helper install, IPC ping, utun setup, QUIC examples), see `CoentroVPN-Docs/docs/MACOS_TESTING.md`.
+
 ---
 
 ## 4. Platform Guide: Linux & Docker
