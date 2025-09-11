@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Check if another instance is already running (skip if using socket activation)
     if !args.socket_activation && is_already_running() {
-        eprintln!("Another instance of the helper daemon is already running. Exiting.");
+        error!("Another instance of the helper daemon is already running. Exiting.");
         std::process::exit(1);
     }
 
@@ -108,11 +108,11 @@ async fn main() -> anyhow::Result<()> {
         args.config.display()
     );
     let config_result = Config::load(&args.config);
-    let allowed_uids = match config_result {
+    let allowed_uids = match &config_result {
         Ok(config) => {
             info!("Loaded configuration from {}", args.config.display());
             info!("Allowed UIDs: {:?}", config.helper.allowed_uids);
-            config.helper.allowed_uids
+            config.helper.allowed_uids.clone()
         }
         Err(e) => {
             warn!(
@@ -125,8 +125,17 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Group-based auth placeholder: keep default for now (config-driven GIDs can be reintroduced with tests)
-    let allowed_gids = Some(Vec::new());
+    // Group-based auth from configuration (optional)
+    let allowed_gids = match &config_result {
+        Ok(config) if !config.helper.allowed_gids.is_empty() => {
+            info!(
+                "Group-based authentication: allowing GIDs from config: {:?}",
+                config.helper.allowed_gids
+            );
+            Some(config.helper.allowed_gids.clone())
+        }
+        _ => Some(Vec::new()),
+    };
 
     // Create a channel for shutdown signaling
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
