@@ -10,6 +10,7 @@ use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
     rolling::{RollingFileAppender, Rotation},
 };
+use tracing_log::LogTracer;
 use tracing_subscriber::{
     EnvFilter,
     fmt::{self, format::FmtSpan},
@@ -79,6 +80,9 @@ impl Default for LogOptions {
 /// let _guard = init_logging(options);
 /// ```
 pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
+    // Bridge `log` crate records into `tracing` so legacy logs are captured
+    let _ = LogTracer::init();
+
     let filter = EnvFilter::from_default_env().add_directive(options.level.into());
 
     let mut layers = Vec::new();

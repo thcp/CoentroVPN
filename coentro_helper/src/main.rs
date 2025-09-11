@@ -11,12 +11,13 @@ mod network_manager;
 mod sleep_monitor;
 
 use clap::Parser;
-use log::{debug, error, info, warn, LevelFilter};
 use shared_utils::config::Config;
+use shared_utils::logging::{init_logging, LogOptions};
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::oneshot;
+use tracing::{debug, error, info, warn};
 
 /// Command-line arguments for the helper daemon
 #[derive(Parser, Debug)]
@@ -72,20 +73,19 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // Initialize logging
-    let log_level = match args.log_level.to_lowercase().as_str() {
-        "trace" => LevelFilter::Trace,
-        "debug" => LevelFilter::Debug,
-        "info" => LevelFilter::Info,
-        "warn" => LevelFilter::Warn,
-        "error" => LevelFilter::Error,
-        _ => LevelFilter::Info,
+    // Initialize tracing-based logging
+    let level = match args.log_level.to_lowercase().as_str() {
+        "trace" => tracing::Level::TRACE,
+        "debug" => tracing::Level::DEBUG,
+        "info" => tracing::Level::INFO,
+        "warn" => tracing::Level::WARN,
+        "error" => tracing::Level::ERROR,
+        _ => tracing::Level::INFO,
     };
-
-    env_logger::Builder::new()
-        .filter_level(log_level)
-        .format_timestamp_secs()
-        .init();
+    let _guard = init_logging(LogOptions {
+        level,
+        ..Default::default()
+    });
 
     info!("CoentroVPN Helper Daemon starting up");
 
@@ -324,17 +324,23 @@ fn get_socket_from_launchd() -> anyhow::Result<RawFd> {
             libc::close(fd);
             return Err(anyhow::anyhow!("Failed to listen on socket: {}", err));
         }
-
-        // Set socket permissions
-        let mode = 0o666; // rw-rw-rw-
-        if libc::chmod(path_bytes.as_ptr() as *const libc::c_char, mode) < 0 {
-            let err = std::io::Error::last_os_error();
-            libc::close(fd);
-            return Err(anyhow::anyhow!("Failed to set socket permissions: {}", err));
-        }
-
         fd
     };
+
+    // Harden socket file permissions to 0660 (rw-rw----)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&socket_path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o660);
+            if let Err(e) = std::fs::set_permissions(&socket_path, permissions) {
+                warn!("Failed to set socket permissions to 0660: {}", e);
+            }
+        } else {
+            warn!("Failed to read metadata for socket to set permissions");
+        }
+    }
 
     info!("Created socket manually with file descriptor {}", socket_fd);
 

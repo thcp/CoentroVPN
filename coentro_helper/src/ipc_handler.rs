@@ -9,7 +9,6 @@ use coentro_ipc::messages::{
 };
 use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
 use governor::{Quota, RateLimiter};
-use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::os::unix::io::RawFd;
@@ -18,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
+use tracing::{debug, error, info, warn};
 
 /// Get the group ID (GID) for a given group name
 /// Returns None if the group doesn't exist
@@ -400,20 +400,31 @@ impl IpcHandler {
 
                 let rate_limiter = Arc::new(RateLimiter::direct(quota));
 
-                // Create a new client state
-                let client_state = ClientState {
-                    pid: client_id,
-                    tunnel_active: false,
-                    active_interface: None,
-                    current_ip_config: None,
-                    tun_fd: None,
-                    rate_limiter,
-                };
+                            // Create a new client state (only if none exists)
+                            let client_state = ClientState {
+                                pid: client_id,
+                                tunnel_active: false,
+                                active_interface: None,
+                                current_ip_config: None,
+                                tun_fd: None,
+                                rate_limiter,
+                            };
 
-                            // Store the client state
+                            // Store the client state, but avoid overwriting existing state for same UID
                             {
+                                use std::collections::hash_map::Entry;
                                 let mut active_clients = self.active_clients.lock().unwrap();
-                                active_clients.insert(client_id, client_state);
+                                match active_clients.entry(client_id) {
+                                    Entry::Vacant(v) => {
+                                        v.insert(client_state);
+                                    }
+                                    Entry::Occupied(_) => {
+                                        info!(
+                                            "Client state already exists for ID={}; reusing existing state",
+                                            client_id
+                                        );
+                                    }
+                                }
                             }
 
                             // Clone necessary data for the client task
@@ -849,11 +860,13 @@ impl IpcHandler {
                 if let Some(name) = &state.active_interface {
                     (name.clone(), state.tun_fd)
                 } else {
-                    return Err(anyhow::anyhow!("Client has no active interface"));
+                    // No active interface recorded; treat teardown as idempotent success
+                    return Ok(());
                 }
             }
             _ => {
-                return Err(anyhow::anyhow!("Client has no active tunnel"));
+                // No active tunnel; treat teardown as idempotent success
+                return Ok(());
             }
         };
 
@@ -867,10 +880,22 @@ impl IpcHandler {
             .map_err(|e| anyhow::anyhow!("Failed to restore DNS configuration: {}", e))?;
 
         // Destroy the TUN interface
-        network_manager
-            .destroy_tun(&interface_name)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to destroy TUN interface: {}", e))?;
+        // Attempt to destroy the interface; treat missing/non-existent interface as already torn down
+        if let Err(e) = network_manager.destroy_tun(&interface_name).await {
+            // If the platform reports a typical "does not exist" condition, ignore it
+            let emsg = e.to_string();
+            if emsg.contains("does not exist")
+                || emsg.contains("not found")
+                || emsg.contains("No such")
+            {
+                info!(
+                    "Interface {} already absent during teardown; treating as success",
+                    interface_name
+                );
+            } else {
+                return Err(anyhow::anyhow!("Failed to destroy TUN interface: {}", e));
+            }
+        }
 
         // Update the client state
         {

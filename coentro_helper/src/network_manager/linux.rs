@@ -4,12 +4,12 @@
 
 use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
 use std::net::Ipv4Addr;
 use std::os::unix::io::AsRawFd;
 use std::process::Command;
 use std::str::FromStr;
 use tokio::process::Command as TokioCommand;
+use tracing::{debug, error, info, warn};
 use tun::{Configuration, Device, Layer};
 
 /// Linux Network Manager implementation

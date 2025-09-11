@@ -9,10 +9,11 @@ mod tun_handler;
 
 use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
 use clap::{Parser, Subcommand};
-use log::{debug, error, info, LevelFilter};
+use shared_utils::logging::{init_logging, LogOptions};
 use shared_utils::transport::ClientTransport;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 /// Command-line arguments for the client
@@ -85,20 +86,19 @@ async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
 
-    // Initialize logging
-    let log_level = match args.log_level.to_lowercase().as_str() {
-        "trace" => LevelFilter::Trace,
-        "debug" => LevelFilter::Debug,
-        "info" => LevelFilter::Info,
-        "warn" => LevelFilter::Warn,
-        "error" => LevelFilter::Error,
-        _ => LevelFilter::Info,
+    // Initialize tracing-based logging
+    let level = match args.log_level.to_lowercase().as_str() {
+        "trace" => tracing::Level::TRACE,
+        "debug" => tracing::Level::DEBUG,
+        "info" => tracing::Level::INFO,
+        "warn" => tracing::Level::WARN,
+        "error" => tracing::Level::ERROR,
+        _ => tracing::Level::INFO,
     };
-
-    env_logger::Builder::new()
-        .filter_level(log_level)
-        .format_timestamp_secs()
-        .init();
+    let _guard = init_logging(LogOptions {
+        level,
+        ..Default::default()
+    });
 
     info!("CoentroVPN Client starting up");
     debug!("Helper socket path: {}", args.helper_socket.display());

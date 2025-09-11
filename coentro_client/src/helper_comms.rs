@@ -5,11 +5,12 @@
 use coentro_ipc::messages::{
     ClientRequest, HelperResponse, StatusDetails, TunnelReadyDetails, TunnelSetupRequest,
 };
-use coentro_ipc::transport::{IpcTransport, UnixSocketTransport};
-use log::{debug, error, info};
+use coentro_ipc::transport::{IpcError, IpcTransport, UnixSocketTransport};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{debug, error, info};
 
 /// Client for communicating with the helper daemon
 pub struct HelperClient {
@@ -176,15 +177,39 @@ impl HelperClient {
         let mut transport = self.transport.lock().await;
 
         info!("Sending tunnel teardown request to helper daemon");
-        transport
-            .send_request(&ClientRequest::TeardownTunnel)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send tunnel teardown request: {}", e))?;
+        match transport.send_request(&ClientRequest::TeardownTunnel).await {
+            Ok(()) => {}
+            Err(IpcError::Io(ioe)) if ioe.kind() == ErrorKind::BrokenPipe => {
+                // Helper closed the socket; assume it is already shutting down or torn down
+                info!(
+                    "Helper connection closed (EPIPE) during teardown request; assuming tunnel is already torn down"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to send tunnel teardown request: {}",
+                    e
+                ));
+            }
+        }
 
-        let response = transport
-            .receive_response()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive tunnel teardown response: {}", e))?;
+        let response = match transport.receive_response().await {
+            Ok(r) => r,
+            Err(IpcError::Io(ioe)) if ioe.kind() == ErrorKind::UnexpectedEof => {
+                // Helper closed after processing; treat as success
+                info!(
+                    "Helper connection closed (UnexpectedEof) after teardown; treating as success"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to receive tunnel teardown response: {}",
+                    e
+                ));
+            }
+        };
 
         match response {
             HelperResponse::Success => {

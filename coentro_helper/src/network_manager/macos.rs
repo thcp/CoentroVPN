@@ -5,7 +5,6 @@
 
 use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -14,6 +13,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::Command;
 use std::ptr;
 use tokio::process::Command as TokioCommand;
+use tracing::{debug, error, info, warn};
 
 /// macOS Network Manager
 #[derive(Debug)]
@@ -22,6 +22,8 @@ pub struct MacOsNetworkManager {
     original_dns: Option<Vec<String>>,
     /// Path to the resolv.conf file
     resolv_conf_path: String,
+    /// Network Service name whose DNS we modified (for restore)
+    dns_service_name: Option<String>,
 }
 
 impl MacOsNetworkManager {
@@ -30,6 +32,7 @@ impl MacOsNetworkManager {
         Self {
             original_dns: None,
             resolv_conf_path: "/etc/resolv.conf".to_string(),
+            dns_service_name: None,
         }
     }
 
@@ -318,6 +321,123 @@ impl MacOsNetworkManager {
 
         Ok(())
     }
+
+    /// Detect the primary outbound device (e.g., en0) from the default route
+    async fn detect_primary_device() -> Option<String> {
+        let out = TokioCommand::new("/usr/sbin/route")
+            .args(["-n", "get", "default"])
+            .output()
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        for line in s.lines() {
+            let line = line.trim();
+            if line.starts_with("interface: ") {
+                return Some(line.trim_start_matches("interface: ").trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// Map a device (e.g., en0) to a Network Service name (e.g., "Wi-Fi")
+    async fn map_device_to_service(device: &str) -> Option<String> {
+        let out = TokioCommand::new("/usr/sbin/networksetup")
+            .arg("-listnetworkserviceorder")
+            .output()
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        for line in s.lines() {
+            let line = line.trim();
+            if line.starts_with("(Hardware Port: ") {
+                // Example: (Hardware Port: Wi-Fi, Device: en0)
+                let candidate = line
+                    .strip_prefix("(Hardware Port: ")
+                    .and_then(|rest| rest.split(',').next())
+                    .map(|name| name.trim().to_string());
+                if line.contains(&format!("Device: {}", device)) {
+                    return candidate;
+                }
+            }
+        }
+        // Fallback: pick the first enabled service name from listnetworkservices
+        let out2 = TokioCommand::new("/usr/sbin/networksetup")
+            .arg("-listnetworkservices")
+            .output()
+            .await
+            .ok()?;
+        if !out2.status.success() {
+            return None;
+        }
+        let s2 = String::from_utf8_lossy(&out2.stdout);
+        for line in s2.lines() {
+            let name = line.trim();
+            if name.is_empty() || name.starts_with("An asterisk (") {
+                continue;
+            }
+            return Some(name.to_string());
+        }
+        None
+    }
+
+    async fn get_dns_for_service(service: &str) -> NetworkResult<Vec<String>> {
+        let out = TokioCommand::new("/usr/sbin/networksetup")
+            .args(["-getdnsservers", service])
+            .output()
+            .await
+            .map_err(|e| {
+                NetworkError::DnsConfig(format!("Failed to run networksetup -getdnsservers: {}", e))
+            })?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(NetworkError::DnsConfig(format!(
+                "networksetup -getdnsservers failed: {}",
+                stderr.trim()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let msg = stdout.trim();
+        if msg.contains("aren't any DNS Servers set") {
+            return Ok(Vec::new());
+        }
+        let mut servers = Vec::new();
+        for line in stdout.lines() {
+            let val = line.trim();
+            if !val.is_empty() {
+                servers.push(val.to_string());
+            }
+        }
+        Ok(servers)
+    }
+
+    async fn set_dns_for_service(service: &str, servers: &[String]) -> NetworkResult<()> {
+        let mut cmd = TokioCommand::new("/usr/sbin/networksetup");
+        cmd.arg("-setdnsservers").arg(service);
+        if servers.is_empty() {
+            cmd.arg("empty");
+        } else {
+            for s in servers {
+                cmd.arg(s);
+            }
+        }
+        let out = cmd.output().await.map_err(|e| {
+            NetworkError::DnsConfig(format!("Failed to run networksetup -setdnsservers: {}", e))
+        })?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(NetworkError::DnsConfig(format!(
+                "networksetup -setdnsservers failed: {}",
+                stderr.trim()
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -352,12 +472,30 @@ impl NetworkManager for MacOsNetworkManager {
         info!("Destroying TUN interface: {}", name);
 
         // On macOS, we can just bring the interface down
-        Self::run_command(
+        match Self::run_command(
             "ifconfig",
             &[name, "down"],
             &format!("Failed to bring down TUN interface {}", name),
         )
-        .await?;
+        .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                let emsg = e.to_string();
+                // Treat already-absent interfaces as success (idempotent teardown)
+                if emsg.contains("does not exist")
+                    || emsg.contains("No such")
+                    || emsg.contains("not found")
+                {
+                    info!(
+                        "Interface {} already absent when bringing down; treating as success",
+                        name
+                    );
+                } else {
+                    return Err(e);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -489,22 +627,60 @@ impl NetworkManager for MacOsNetworkManager {
     async fn configure_dns(&self, servers: &[String]) -> NetworkResult<()> {
         info!("Configuring DNS servers: {:?}", servers);
 
-        // Save the original DNS configuration if we haven't already
+        // Prefer networksetup per-service DNS configuration
+        if let Some(dev) = Self::detect_primary_device().await {
+            info!("Detected primary device: {}", dev);
+            if let Some(service) = Self::map_device_to_service(&dev).await {
+                info!("Mapped device {} to service '{}'", dev, service);
+                // Save original DNS once
+                if self.original_dns.is_none() {
+                    match Self::get_dns_for_service(&service).await {
+                        Ok(orig) => {
+                            info!("Saved original DNS for service '{}': {:?}", service, orig);
+                            let this = self as *const Self as *mut Self;
+                            unsafe {
+                                (*this).original_dns = Some(orig);
+                                (*this).dns_service_name = Some(service.clone());
+                            }
+                        }
+                        Err(e) => warn!("Failed to read original DNS for '{}': {}", service, e),
+                    }
+                }
+
+                if let Err(e) = Self::set_dns_for_service(&service, servers).await {
+                    warn!(
+                        "networksetup failed to set DNS for '{}': {} — falling back to resolv.conf",
+                        service, e
+                    );
+                } else {
+                    // Flush DNS cache
+                    let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
+                    let _ = Command::new("killall")
+                        .args(["-HUP", "mDNSResponder"])
+                        .output();
+                    return Ok(());
+                }
+            } else {
+                warn!(
+                    "Could not map device {} to a network service; falling back",
+                    dev
+                );
+            }
+        } else {
+            warn!("Could not detect primary device; falling back to resolv.conf");
+        }
+
+        // Fallback to resolv.conf if networksetup path is unavailable
         if self.original_dns.is_none() {
             let original = self.read_dns_config()?;
-            info!("Saved original DNS configuration: {:?}", original);
+            info!("Saved original DNS (resolv.conf fallback): {:?}", original);
             let this = self as *const Self as *mut Self;
             unsafe {
                 (*this).original_dns = Some(original);
             }
         }
-
-        // Write the new DNS configuration
         self.write_dns_config(servers)?;
-
-        // Flush the DNS cache
         let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
-
         Ok(())
     }
 
@@ -512,17 +688,41 @@ impl NetworkManager for MacOsNetworkManager {
     async fn restore_dns(&self) -> NetworkResult<()> {
         info!("Restoring original DNS configuration");
 
+        // Try to restore via networksetup if we modified a service
+        if let Some(service) = &self.dns_service_name {
+            if let Some(ref original) = self.original_dns {
+                info!("Restoring DNS for service '{}': {:?}", service, original);
+                // If original is empty, pass 'empty' to clear
+                if let Err(e) = Self::set_dns_for_service(service, original).await {
+                    warn!(
+                        "Failed to restore DNS for service '{}' via networksetup: {}",
+                        service, e
+                    );
+                } else {
+                    let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
+                    let _ = Command::new("killall")
+                        .args(["-HUP", "mDNSResponder"])
+                        .output();
+                    // Clear saved state
+                    let this = self as *const Self as *mut Self;
+                    unsafe {
+                        (*this).original_dns = None;
+                        (*this).dns_service_name = None;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        // Fallback: restore resolv.conf if we have it saved
         if let Some(ref original) = self.original_dns {
-            info!("Restoring DNS servers: {:?}", original);
+            info!("Restoring resolv.conf DNS servers: {:?}", original);
             self.write_dns_config(original)?;
-
-            // Flush the DNS cache
             let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
-
-            // Clear the saved original DNS configuration
             let this = self as *const Self as *mut Self;
             unsafe {
                 (*this).original_dns = None;
+                (*this).dns_service_name = None;
             }
         } else {
             warn!("No original DNS configuration to restore");

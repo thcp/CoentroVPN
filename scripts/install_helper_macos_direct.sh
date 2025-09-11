@@ -81,16 +81,33 @@ if [ "$UNINSTALL" = true ]; then
   uninstall
 fi
 
-# Build the helper daemon
+# Build the helper daemon (as the original invoking user to avoid root-owned target/)
 echo -e "${YELLOW}Building CoentroVPN helper daemon...${NC}"
 cd "$(dirname "$0")/.."
 
-if [ "$DEBUG" = true ]; then
-  cargo build --package coentro_helper
-  HELPER_PATH="./target/debug/${HELPER_NAME}"
+BUILD_USER="${SUDO_USER:-}"
+if [ -n "$BUILD_USER" ]; then
+  echo "Detected SUDO_USER=$BUILD_USER; building as original user to prevent permission issues in ./target"
+  # If target exists and is root-owned from a previous run, fix ownership
+  if [ -d ./target ]; then
+    chown -R "$BUILD_USER" ./target || true
+  fi
+  if [ "$DEBUG" = true ]; then
+    sudo -u "$BUILD_USER" -H bash -lc 'cargo build --package coentro_helper'
+    HELPER_PATH="./target/debug/${HELPER_NAME}"
+  else
+    sudo -u "$BUILD_USER" -H bash -lc 'cargo build --release --package coentro_helper'
+    HELPER_PATH="./target/release/${HELPER_NAME}"
+  fi
 else
-  cargo build --release --package coentro_helper
-  HELPER_PATH="./target/release/${HELPER_NAME}"
+  # Fallback: no SUDO_USER (unlikely), build as current user
+  if [ "$DEBUG" = true ]; then
+    cargo build --package coentro_helper
+    HELPER_PATH="./target/debug/${HELPER_NAME}"
+  else
+    cargo build --release --package coentro_helper
+    HELPER_PATH="./target/release/${HELPER_NAME}"
+  fi
 fi
 
 if [ ! -f "$HELPER_PATH" ]; then
