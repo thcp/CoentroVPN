@@ -208,13 +208,8 @@ async fn main() -> anyhow::Result<()> {
 
                 // Start the TUN-to-transport bridge over QUIC
                 let tunnel_task = tokio::spawn(async move {
-                    if let Err(e) = start_tun_transport_bridge(
-                        tun_handler,
-                        connection,
-                        processor,
-                        100,
-                    )
-                    .await
+                    if let Err(e) =
+                        start_tun_transport_bridge(tun_handler, connection, processor, 100).await
                     {
                         error!("Tunnel error: {}", e);
                     }

@@ -5,12 +5,12 @@
 //! and vice versa.
 
 use log::{debug, error, info, warn};
+use shared_utils::transport::Connection as TransportConnection;
 use std::io::{self, Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
-use shared_utils::transport::Connection as TransportConnection;
 
 /// Maximum packet size for TUN interface
 const MAX_PACKET_SIZE: usize = 1500;

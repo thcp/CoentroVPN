@@ -6,14 +6,14 @@
 use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{Read, Write};
+use std::mem;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::Command;
-use tokio::process::Command as TokioCommand;
-use std::ffi::{CStr, CString};
-use std::mem;
 use std::ptr;
+use tokio::process::Command as TokioCommand;
 
 /// macOS Network Manager
 #[derive(Debug)]
@@ -71,7 +71,10 @@ impl MacOsNetworkManager {
             let fd = libc::socket(libc::PF_SYSTEM, libc::SOCK_DGRAM, libc::SYSPROTO_CONTROL);
             if fd < 0 {
                 let e = std::io::Error::last_os_error();
-                error!("utun: socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL) failed: {}", e);
+                error!(
+                    "utun: socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL) failed: {}",
+                    e
+                );
                 return Err(NetworkError::TunDevice(format!(
                     "Failed to create control socket: {}",
                     e
@@ -399,7 +402,10 @@ impl NetworkManager for MacOsNetworkManager {
                     let res = Self::run_command(
                         "route",
                         &["-n", "add", "-net", cidr, "-interface", interface],
-                        &format!("Failed to add split default route {} via interface {}", cidr, interface),
+                        &format!(
+                            "Failed to add split default route {} via interface {}",
+                            cidr, interface
+                        ),
                     )
                     .await;
                     if let Err(e) = res {
@@ -434,7 +440,10 @@ impl NetworkManager for MacOsNetworkManager {
         .await;
         if let Err(e) = res {
             if e.to_string().contains("File exists") {
-                info!("Route {} already exists; considering it a success", destination);
+                info!(
+                    "Route {} already exists; considering it a success",
+                    destination
+                );
             } else {
                 return Err(e);
             }

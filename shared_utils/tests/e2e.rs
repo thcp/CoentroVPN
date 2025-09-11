@@ -16,8 +16,8 @@ use shared_utils::config::{Config, ConfigManager, Role};
 use shared_utils::crypto::aes_gcm::AesGcmCipher;
 use shared_utils::proto::framing::{Frame, FrameDecoder, FrameEncoder};
 // Updated imports:
-use shared_utils::quic::{QuicClient, QuicServer};
 use shared_utils::quic::generate_self_signed_cert;
+use shared_utils::quic::{QuicClient, QuicServer};
 use shared_utils::transport::{ClientTransport, Listener as TraitListener, ServerTransport}; // Removed unused Connection as TraitConnection & TransportError
 use shared_utils::tunnel::{
     ClientBootstrapper, ServerBootstrapper, TunnelBootstrapper, TunnelConfig, TunnelManager,
@@ -285,7 +285,12 @@ async fn test_large_message_fragmentation_and_reassembly() {
     // Run the client with the large message
     let client_result = timeout(
         TEST_TIMEOUT,
-        run_large_message_client(actual_server_addr, &key, large_message.clone(), server_cert.clone()),
+        run_large_message_client(
+            actual_server_addr,
+            &key,
+            large_message.clone(),
+            server_cert.clone(),
+        ),
     )
     .await;
 
@@ -542,7 +547,12 @@ async fn test_quic_transport_with_encryption_e2e() {
 
     let client_result = timeout(
         TEST_TIMEOUT,
-        run_encrypted_quic_client(actual_server_addr, &key, test_messages.clone(), server_cert.clone()),
+        run_encrypted_quic_client(
+            actual_server_addr,
+            &key,
+            test_messages.clone(),
+            server_cert.clone(),
+        ),
     )
     .await;
 
