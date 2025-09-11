@@ -73,7 +73,7 @@ pub fn configure_client_tls() -> Result<Arc<rustls::ClientConfig>, TransportErro
         client_config
             .dangerous()
             .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
-        return Ok(Arc::new(client_config));
+        Ok(Arc::new(client_config))
     }
 
     #[cfg(not(feature = "insecure-tls"))]

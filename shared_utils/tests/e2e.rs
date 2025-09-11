@@ -18,7 +18,6 @@ use shared_utils::proto::framing::{Frame, FrameDecoder, FrameEncoder};
 // Updated imports:
 use shared_utils::quic::{QuicClient, QuicServer};
 use shared_utils::quic::generate_self_signed_cert;
-use rustls; // use in-test for Certificate type
 use shared_utils::transport::{ClientTransport, Listener as TraitListener, ServerTransport}; // Removed unused Connection as TraitConnection & TransportError
 use shared_utils::tunnel::{
     ClientBootstrapper, ServerBootstrapper, TunnelBootstrapper, TunnelConfig, TunnelManager,
