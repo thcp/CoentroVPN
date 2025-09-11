@@ -6,10 +6,13 @@
 use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::mem;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::Command;
+use std::ptr;
 use tokio::process::Command as TokioCommand;
 
 /// macOS Network Manager
@@ -54,83 +57,101 @@ impl MacOsNetworkManager {
         Ok(stdout.trim().to_string())
     }
 
-    /// Open the TUN device
+    /// Open a new utun device and return its file descriptor and name.
+    ///
+    /// Uses PF_SYSTEM/SYSPROTO_CONTROL to create a fresh `utunX` device.
     fn open_tun_device(&self) -> NetworkResult<(File, String)> {
-        // On macOS, we need to use a different approach to create TUN devices
-        // We'll use the system's socket API to create a TUN device
+        // Constants not exposed in libc on all versions
+        const AF_SYS_CONTROL: libc::c_uchar = 2; // AF_SYS_CONTROL
+        const UTUN_OPT_IFNAME: libc::c_int = 2; // getsockopt option to fetch interface name
+        const UTUN_CONTROL_NAME: &str = "com.apple.net.utun_control";
 
-        info!("Creating TUN device using socket API");
-
-        // First, try to use the system command to create a TUN device
-        // This is a more reliable approach on macOS
-        let output = match std::process::Command::new("sh")
-            .arg("-c")
-            .arg("networksetup -listallnetworkservices | grep -i vpn || echo 'No VPN found'")
-            .output()
-        {
-            Ok(output) => output,
-            Err(e) => {
-                error!("Failed to check for existing VPN services: {}", e);
-                return Err(NetworkError::SystemCommand(format!(
-                    "Failed to check for existing VPN services: {}",
+        unsafe {
+            // Create control socket
+            let fd = libc::socket(libc::PF_SYSTEM, libc::SOCK_DGRAM, libc::SYSPROTO_CONTROL);
+            if fd < 0 {
+                let e = std::io::Error::last_os_error();
+                error!(
+                    "utun: socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL) failed: {}",
+                    e
+                );
+                return Err(NetworkError::TunDevice(format!(
+                    "Failed to create control socket: {}",
                     e
                 )));
             }
-        };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        info!("Existing VPN services: {}", stdout);
+            // Resolve control id for utun
+            let mut info: libc::ctl_info = mem::zeroed();
+            let name_c = CString::new(UTUN_CONTROL_NAME).unwrap();
+            // Copy name into ctl_name (bounded)
+            let src = name_c.as_bytes_with_nul();
+            let dst = info.ctl_name.as_mut_ptr() as *mut u8;
+            ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len().min(info.ctl_name.len()));
 
-        // Try to create a TUN device using a different approach
-        // On macOS, we can use the 'sudo networksetup -createnetworkservice' command
-        // But this requires additional setup and permissions
-
-        // For now, let's try to use an existing TUN device
-        // On macOS, TUN devices are typically named 'utunX'
-        for i in 0..10 {
-            let device_name = format!("utun{}", i);
-
-            // Check if the device exists using ifconfig
-            let output = match std::process::Command::new("ifconfig")
-                .arg(&device_name)
-                .output()
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    error!("Failed to check if {} exists: {}", device_name, e);
-                    continue;
-                }
-            };
-
-            if !output.status.success() {
-                // Device doesn't exist, try the next one
-                continue;
+            if libc::ioctl(fd, libc::CTLIOCGINFO, &mut info) < 0 {
+                let e = std::io::Error::last_os_error();
+                let _ = libc::close(fd);
+                error!("utun: ioctl(CTLIOCGINFO) failed: {}", e);
+                return Err(NetworkError::TunDevice(format!(
+                    "Failed to resolve utun control id: {}",
+                    e
+                )));
             }
 
-            // Device exists, try to open it
-            info!("Found existing TUN device: {}", device_name);
+            // Build sockaddr_ctl for connect
+            let mut addr: libc::sockaddr_ctl = mem::zeroed();
+            addr.sc_len = mem::size_of::<libc::sockaddr_ctl>() as u8;
+            addr.sc_family = libc::AF_SYSTEM as u8;
+            addr.ss_sysaddr = AF_SYS_CONTROL as u16;
+            addr.sc_id = info.ctl_id;
+            addr.sc_unit = 0; // 0 means allocate next available utunX
 
-            // On macOS, we need to use a different approach to open TUN devices
-            // We'll use the system's socket API to open the device
+            let ret = libc::connect(
+                fd,
+                &addr as *const _ as *const libc::sockaddr,
+                mem::size_of::<libc::sockaddr_ctl>() as libc::socklen_t,
+            );
+            if ret < 0 {
+                let e = std::io::Error::last_os_error();
+                let _ = libc::close(fd);
+                error!("utun: connect() failed: {}", e);
+                return Err(NetworkError::TunDevice(format!(
+                    "Failed to connect utun control socket: {}",
+                    e
+                )));
+            }
 
-            // For testing purposes, let's create a dummy file to represent the TUN device
-            // In a real implementation, we would use the socket API to open the device
-            let dummy_file = match std::fs::File::open("/dev/null") {
-                Ok(file) => file,
-                Err(e) => {
-                    error!("Failed to open dummy file: {}", e);
-                    continue;
-                }
-            };
+            // Retrieve interface name via getsockopt
+            let mut ifname = [0u8; libc::IFNAMSIZ];
+            let mut ifname_len = ifname.len() as libc::socklen_t;
+            let gso = libc::getsockopt(
+                fd,
+                libc::SYSPROTO_CONTROL,
+                UTUN_OPT_IFNAME,
+                ifname.as_mut_ptr() as *mut libc::c_void,
+                &mut ifname_len,
+            );
+            if gso < 0 {
+                let e = std::io::Error::last_os_error();
+                let _ = libc::close(fd);
+                error!("utun: getsockopt(UTUN_OPT_IFNAME) failed: {}", e);
+                return Err(NetworkError::TunDevice(format!(
+                    "Failed to get utun interface name: {}",
+                    e
+                )));
+            }
 
-            info!("Successfully opened TUN device: {}", device_name);
-            return Ok((dummy_file, device_name));
+            // Convert C string to Rust String
+            let name_cstr = CStr::from_ptr(ifname.as_ptr() as *const libc::c_char);
+            let if_name = name_cstr.to_string_lossy().into_owned();
+
+            info!("Created utun device: {} (fd {})", if_name, fd);
+
+            // Wrap fd in File to manage lifetime (will be leaked later intentionally)
+            let file = File::from_raw_fd(fd);
+            Ok((file, if_name))
         }
-
-        // If we get here, we couldn't open any TUN device
-        Err(NetworkError::TunDevice(
-            "Failed to open any TUN device".to_string(),
-        ))
     }
 
     /// Configure the TUN interface using ifconfig
@@ -352,8 +373,55 @@ impl NetworkManager for MacOsNetworkManager {
             "Adding route: destination={}, gateway={:?}, interface={}",
             destination, gateway, interface
         );
+        // Special-case default route on macOS: try default first, then split default as fallback
+        if gateway.is_none() && (destination == "0.0.0.0/0" || destination == "default") {
+            // Try to add default route via interface
+            let try_default = Self::run_command(
+                "route",
+                &["-n", "add", "-inet", "default", "-interface", interface],
+                "Failed to add default route via interface",
+            )
+            .await;
 
-        // Build the command arguments
+            match try_default {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if e.to_string().contains("File exists") {
+                        info!("Default route already exists; considering it a success");
+                        return Ok(());
+                    }
+                }
+            }
+
+            {
+                warn!(
+                    "Default route via interface failed; falling back to split default (0.0.0.0/1 and 128.0.0.0/1)"
+                );
+                // Add two covering routes to avoid replacing existing default
+                for cidr in ["0.0.0.0/1", "128.0.0.0/1"].iter() {
+                    let res = Self::run_command(
+                        "route",
+                        &["-n", "add", "-net", cidr, "-interface", interface],
+                        &format!(
+                            "Failed to add split default route {} via interface {}",
+                            cidr, interface
+                        ),
+                    )
+                    .await;
+                    if let Err(e) = res {
+                        if e.to_string().contains("File exists") {
+                            info!("Split default {} already exists; continuing", cidr);
+                            continue;
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        // Build the generic command arguments
         let mut args = vec!["-n", "add", "-net", destination];
 
         if let Some(gw) = gateway {
@@ -364,12 +432,22 @@ impl NetworkManager for MacOsNetworkManager {
         }
 
         // Run the route command
-        Self::run_command(
+        let res = Self::run_command(
             "route",
             &args,
             &format!("Failed to add route to {}", destination),
         )
-        .await?;
+        .await;
+        if let Err(e) = res {
+            if e.to_string().contains("File exists") {
+                info!(
+                    "Route {} already exists; considering it a success",
+                    destination
+                );
+            } else {
+                return Err(e);
+            }
+        }
 
         Ok(())
     }

@@ -4,6 +4,20 @@ use crate::transport::TransportError; // Use the new central TransportError
 use rustls;
 use std::sync::Arc; // Keep rustls import for types used in signatures
 
+#[cfg(not(feature = "insecure-tls"))]
+fn load_native_roots() -> Result<rustls::RootCertStore, TransportError> {
+    let mut roots = rustls::RootCertStore::empty();
+    #[allow(deprecated)]
+    roots.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+        rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
+    Ok(roots)
+}
+
 // The old QuicTransport trait, TransportError enum, TransportResult type,
 // and TransportMessage enum have been removed as they are superseded by
 // the definitions in `shared_utils/src/transport/mod.rs`.
@@ -45,25 +59,49 @@ pub fn configure_tls(
 /// This configuration uses a dangerous verifier that accepts any server certificate,
 /// suitable for testing and development only.
 pub fn configure_client_tls() -> Result<Arc<rustls::ClientConfig>, TransportError> {
-    let roots = rustls::RootCertStore::empty();
-    // In a real application, you would add trusted root certificates here.
-    // For testing, we can proceed without, relying on NoCertificateVerification.
-    // Example: roots.add_parsable_certificates(&[some_trusted_ca_cert_der]);
+    #[cfg(feature = "insecure-tls")]
+    {
+        // Development-only insecure verifier (feature-gated)
+        let roots = rustls::RootCertStore::empty();
+        let mut client_config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"h3".to_vec()];
+        client_config
+            .dangerous()
+            .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
+        Ok(Arc::new(client_config))
+    }
 
+    #[cfg(not(feature = "insecure-tls"))]
+    {
+        // Secure-by-default: use native root store and standard verification
+        let roots = load_native_roots()?;
+        let mut client_config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"h3".to_vec()];
+        Ok(Arc::new(client_config))
+    }
+}
+
+/// Configure client-side TLS using an explicit set of trust anchors (pinned CAs).
+pub fn configure_client_tls_with_roots(
+    anchors: &[rustls::Certificate],
+) -> Result<Arc<rustls::ClientConfig>, TransportError> {
+    let mut store = rustls::RootCertStore::empty();
+    for cert in anchors {
+        store
+            .add(cert)
+            .map_err(|e| TransportError::Tls(format!("Invalid pinned CA: {}", e)))?;
+    }
     let mut client_config = rustls::ClientConfig::builder()
         .with_safe_defaults()
-        .with_root_certificates(roots) // Provide the (potentially empty) root store
+        .with_root_certificates(store)
         .with_no_client_auth();
-
-    // Enable QUIC support
     client_config.alpn_protocols = vec![b"h3".to_vec()];
-
-    // WARNING: This is insecure and should NOT be used in production.
-    // It disables server certificate verification.
-    client_config
-        .dangerous()
-        .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
-
     Ok(Arc::new(client_config))
 }
 

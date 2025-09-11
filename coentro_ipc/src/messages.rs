@@ -3,7 +3,9 @@
 //! This module defines the message types used for communication between
 //! the client and helper daemon.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Request sent from the client to the helper daemon
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -51,11 +53,22 @@ impl TunnelSetupRequest {
             return Err("Client ID is too long (max 64 characters)".to_string());
         }
 
+        // Validate client_id contains only safe characters (alphanumeric, dash, underscore)
+        let safe_id_regex = Regex::new(r"^[a-zA-Z0-9_\-]+$").unwrap();
+        if !safe_id_regex.is_match(&self.client_id) {
+            return Err("Client ID contains invalid characters. Only alphanumeric characters, underscores, and dashes are allowed.".to_string());
+        }
+
         // Validate requested_ip_config if provided
         if let Some(ip_config) = &self.requested_ip_config {
             if !Self::is_valid_cidr(ip_config) {
                 return Err(format!("Invalid IP configuration: {}", ip_config));
             }
+        }
+
+        // Validate routes_to_add is not empty
+        if self.routes_to_add.is_empty() {
+            return Err("At least one route must be specified".to_string());
         }
 
         // Validate routes_to_add
@@ -67,6 +80,10 @@ impl TunnelSetupRequest {
 
         // Validate dns_servers if provided
         if let Some(dns_servers) = &self.dns_servers {
+            if dns_servers.is_empty() {
+                return Err("DNS servers list cannot be empty".to_string());
+            }
+
             for dns in dns_servers {
                 if !Self::is_valid_ip(dns) {
                     return Err(format!("Invalid DNS server IP: {}", dns));
@@ -97,16 +114,30 @@ impl TunnelSetupRequest {
             return false;
         }
 
-        // Validate IP part
-        if !Self::is_valid_ip(parts[0]) {
+        let ip_part = parts[0].trim();
+
+        // Special case: allow default routes 0.0.0.0/0 and ::/0
+        if (ip_part == "0.0.0.0" || ip_part == "::") && parts[1].trim() == "0" {
+            return true;
+        }
+
+        // Validate IP part (non-default)
+        if !Self::is_valid_ip(ip_part) {
             return false;
         }
 
         // Validate prefix part
         if let Ok(prefix) = parts[1].parse::<u8>() {
-            // IPv4 prefix should be 0-32, IPv6 prefix should be 0-128
-            // For simplicity, we'll allow 0-128 for both
-            prefix <= 128
+            // Check if the prefix is valid for the IP version
+            let is_ipv4 = ip_part.parse::<Ipv4Addr>().is_ok();
+
+            if is_ipv4 {
+                // IPv4 prefix should be 0-32
+                prefix <= 32
+            } else {
+                // IPv6 prefix should be 0-128
+                prefix <= 128
+            }
         } else {
             false
         }
@@ -114,13 +145,26 @@ impl TunnelSetupRequest {
 
     /// Check if a string is a valid IP address
     fn is_valid_ip(ip: &str) -> bool {
+        // Check for common invalid patterns
+        if ip.contains("..") || ip.starts_with('.') || ip.ends_with('.') {
+            return false;
+        }
+
         // Try to parse as IPv4
-        if ip.parse::<std::net::Ipv4Addr>().is_ok() {
+        if let Ok(ipv4) = ip.parse::<Ipv4Addr>() {
+            // Reject certain special addresses
+            if ipv4.is_broadcast() || ipv4.is_unspecified() {
+                return false;
+            }
             return true;
         }
 
         // Try to parse as IPv6
-        if ip.parse::<std::net::Ipv6Addr>().is_ok() {
+        if let Ok(ipv6) = ip.parse::<Ipv6Addr>() {
+            // Reject unspecified address
+            if ipv6.is_unspecified() {
+                return false;
+            }
             return true;
         }
 

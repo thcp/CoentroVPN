@@ -7,7 +7,7 @@ description = "Privileged helper daemon for CoentroVPN split daemon architecture
 [dependencies]
 coentro_ipc = { path = "../coentro_ipc" }
 shared_utils = { path = "../shared_utils" }
-tokio = { version = "1.28", features = ["full"] }
+tokio = { version = "1.32.0", features = ["full"] }
 log = "0.4"
 env_logger = "0.10"
 thiserror = "1.0"
@@ -19,4 +19,6 @@ libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 async-trait = "0.1"
 governor = "0.6"
+tokio-stream = "0.1"
+async-stream = "0.3"
 # We'll use libc directly for socket activation instead of the launch crate

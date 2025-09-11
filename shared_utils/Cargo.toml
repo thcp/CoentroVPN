@@ -16,6 +16,7 @@ rustls = { version = "0.21.7", features = ["dangerous_configuration"] }
 rcgen = "0.11.3"
 tokio = { version = "1.32.0", features = ["full"] }
 futures = "0.3.28"
+webpki-roots = "0.25"
 
 # Error handling
 thiserror = "2.0.12"
@@ -42,6 +43,11 @@ tracing-appender = "0.2.3"
 
 # URL parsing
 url = "2.5.0"
+
+[features]
+# Development-only insecure TLS verification on the client.
+# Secure by default; enable explicitly in tests/examples: `--features insecure-tls`.
+insecure-tls = []
 
 [dev-dependencies]
 # Testing

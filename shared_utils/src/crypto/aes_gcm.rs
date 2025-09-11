@@ -68,11 +68,9 @@ impl AesGcmCipher {
         // Check for counter wrap-around. Extremely unlikely with u64.
         if count == u64::MAX {
             // This is a catastrophic event for this cipher instance.
-            // Depending on policy, one might panic, log an error, or try to re-key.
-            // For now, we'll rely on the fact that u64::MAX is astronomically large.
-            // A production system might need a more robust strategy if such longevity is expected.
-            eprintln!(
-                "CRITICAL: AES-GCM nonce counter has wrapped around! Key re-use is imminent if not re-keyed."
+            // Log loudly; re-keying should be enforced by caller policies.
+            tracing::error!(
+                "CRITICAL: AES-GCM nonce counter has wrapped around! Re-key is required."
             );
         }
         nonce_bytes

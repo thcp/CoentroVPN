@@ -17,7 +17,7 @@ use tempfile::NamedTempFile;
 use tokio::time::sleep;
 
 #[tokio::test]
-#[ignore]
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_config_to_tunnel_e2e() {
     // Create a temporary config file
     let mut file = NamedTempFile::new().unwrap();
@@ -118,7 +118,7 @@ async fn test_config_to_tunnel_e2e() {
 }
 
 #[tokio::test]
-#[ignore]
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_direct_tunnel_bootstrapping() {
     // Generate a shared key
     let key = AesGcmCipher::generate_key();
@@ -169,7 +169,7 @@ async fn test_direct_tunnel_bootstrapping() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-// #[ignore] // Intentionally un-ignoring for debugging
+#[cfg_attr(not(feature = "insecure-tls"), ignore)]
 async fn test_tunnel_manager_lifecycle() {
     println!("test_tunnel_manager_lifecycle: START");
     // Create a tunnel manager

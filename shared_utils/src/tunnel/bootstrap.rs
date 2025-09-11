@@ -227,7 +227,7 @@ impl TunnelBootstrapper for ServerBootstrapper {
             .ok_or_else(|| TunnelError::Config("Server tunnel requires bind_addr".to_string()))?;
 
         let id = TunnelId::from(format!("server-{}", uuid::Uuid::new_v4()));
-        println!(
+        info!(
             "ServerBootstrapper: bootstrap - START for id {} at {}",
             id, bind_addr
         );
@@ -239,52 +239,52 @@ impl TunnelBootstrapper for ServerBootstrapper {
 
         let key = config.psk.clone().unwrap_or_else(|| {
             let key_array = AesGcmCipher::generate_key();
-            println!(
+            info!(
                 "ServerBootstrapper: bootstrap - Generated random encryption key for server {}",
                 id
             );
             key_array.to_vec()
         });
 
-        println!(
+        info!(
             "ServerBootstrapper: bootstrap - Creating QuicServer for {}",
             id
         );
         let quic_server = QuicServer::new(bind_addr, &key).map_err(|e: NewTransportError| {
-            println!(
+            error!(
                 "ServerBootstrapper: bootstrap - Failed to create QUIC server for {}: {}",
                 id, e
             );
             TunnelError::Transport(e)
         })?;
-        println!(
+        info!(
             "ServerBootstrapper: bootstrap - QuicServer created for {}",
             id
         );
 
         handle.set_state(TunnelState::Listening); // New state for server waiting for connection
 
-        println!(
+        info!(
             "ServerBootstrapper: bootstrap - Server {} starting to listen at {}. START_AWAIT for quic_server.listen",
             id, bind_addr
         );
 
         // Listen for an incoming connection
         let listener_result = quic_server.listen(&bind_addr.to_string()).await;
-        println!(
+        debug!(
             "ServerBootstrapper: bootstrap - Server {} finished listen() call. END_AWAIT for quic_server.listen",
             id
         );
         let listener = match listener_result {
             Ok(l) => {
-                println!(
+                info!(
                     "ServerBootstrapper: bootstrap - Server {} successfully created listener",
                     id
                 );
                 l
             }
             Err(e) => {
-                println!(
+                error!(
                     "ServerBootstrapper: bootstrap - Server {} failed to start listening: {}",
                     id, e
                 );
@@ -293,20 +293,20 @@ impl TunnelBootstrapper for ServerBootstrapper {
             }
         };
 
-        println!(
+        debug!(
             "ServerBootstrapper: bootstrap - Server {} getting local_addr",
             id
         );
         let actual_listen_addr = match listener.local_addr() {
             Ok(addr) => {
-                println!(
+                info!(
                     "ServerBootstrapper: bootstrap - Server {} got local_addr: {}",
                     id, addr
                 );
                 addr
             }
             Err(e) => {
-                println!(
+                error!(
                     "ServerBootstrapper: bootstrap - Server {} failed to get actual listen address: {}",
                     id, e
                 );
@@ -314,7 +314,7 @@ impl TunnelBootstrapper for ServerBootstrapper {
             }
         };
 
-        println!(
+        info!(
             "ServerBootstrapper: bootstrap - Server {} listening on {}",
             id, actual_listen_addr
         );
@@ -330,7 +330,7 @@ impl TunnelBootstrapper for ServerBootstrapper {
 
         // Set state to Listening instead of Connected since we haven't accepted a connection yet
         handle.set_state(TunnelState::Listening);
-        println!(
+        info!(
             "ServerBootstrapper: bootstrap - Server {} tunnel bootstrapped (in Listening state). END",
             id
         );
