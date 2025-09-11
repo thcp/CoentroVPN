@@ -134,11 +134,11 @@ pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
         FmtSpan::NONE
     };
 
-    // Set the global subscriber
-    tracing_subscriber::registry()
+    // Set the global subscriber (ignore if already set in this process)
+    let _ = tracing_subscriber::registry()
         .with(filter)
         .with(layers)
-        .init();
+        .try_init();
 
     guard
 }
@@ -215,8 +215,7 @@ pub fn file_logger(path: impl AsRef<Path>) -> WorkerGuard {
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set global default subscriber");
+    let _ = tracing::subscriber::set_global_default(subscriber);
 
     guard
 }
