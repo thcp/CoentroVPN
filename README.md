@@ -47,23 +47,47 @@ This guide provides a quick overview for getting started. For detailed instructi
 
 ### macOS Integration
 
-CoentroVPN integrates with macOS's `launchd` service management system to provide a robust, secure, and reliable helper daemon experience. This integration includes:
+CoentroVPN includes a privileged helper daemon that runs with least privilege to create and manage a TUN (utun) interface. On macOS we support:
 
-- **Socket Activation**: The helper daemon is launched on-demand when a client connects
-- **Automatic Startup**: The helper daemon starts automatically at system boot
-- **Crash Recovery**: The daemon restarts automatically if it crashes
-- **Proper Permissions**: Socket and file permissions are managed securely
+- **Real utun creation** via PF_SYSTEM/SYSPROTO_CONTROL with secure FD passing to the client
+- **`launchd` Socket Activation** (production) and a **direct/dev mode** (local testing)
+- **Proper Permissions**: UDS socket at `/var/run/coentrovpn/helper.sock` with 0660 perms; group-based access via `coentrovpn`
 
-For detailed information, see our [macOS launchd Integration Guide](docs/MACOS_LAUNCHD_INTEGRATION.md).
+Quick paths:
+- One‑shot smoke test (helper → IPC ping → utun setup → QUIC echo → teardown):
+  ```bash
+  bash ./CoentroVPN/scripts/macos_smoke_test.sh
+  ```
+- Install as launchd service (production‑style):
+  ```bash
+  sudo ./scripts/install_helper_macos.sh
+  ```
+- Dev mode (run helper directly; easiest for local iteration):
+  ```bash
+  sudo ./scripts/install_helper_macos_direct.sh
+  ```
 
-To install the helper daemon on macOS:
-
-```bash
-sudo ./scripts/install_helper_macos.sh
-```
+Docs:
+- Step‑by‑step macOS validation: `CoentroVPN-Docs/docs/MACOS_TESTING.md`
+- Launchd details and troubleshooting: `docs/MACOS_LAUNCHD_INTEGRATION.md`
 
 ---
 
 ## ✨ Contributions
 
 We welcome contributions! Please follow our contribution guidelines (coming soon) and open issues or pull requests.
+
+---
+
+## 🔒 TLS & Tests (Developers)
+
+- The QUIC client is **secure‑by‑default** and validates server certificates using system roots.
+- For local examples/tests that use a self‑signed cert, use the dev‑only feature flag:
+  ```bash
+  cargo run -p shared_utils --features insecure-tls --example quic_example
+  ```
+- A pinned‑CA path is available for tests (no insecure flag required); several E2E tests already use it. Bootstrap‑based E2E tests still run under `--features insecure-tls` until PSK/mTLS is wired in.
+
+See also:
+- `CoentroVPN-Docs/docs/SECURITY_HARDENING_STATUS.md`
+- `CoentroVPN-Docs/docs/SECURITY_TICKETS_SPRINT4.md`
