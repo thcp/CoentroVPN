@@ -38,7 +38,7 @@ dirs = "5.0.1"
 
 # Logging
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"
 tracing-log = "0.1.4"
 
