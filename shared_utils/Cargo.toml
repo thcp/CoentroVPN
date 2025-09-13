@@ -40,6 +40,7 @@ dirs = "5.0.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"
+tracing-log = "0.1.4"
 
 # URL parsing
 url = "2.5.0"

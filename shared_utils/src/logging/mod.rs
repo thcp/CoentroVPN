@@ -10,6 +10,7 @@ use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
     rolling::{RollingFileAppender, Rotation},
 };
+use tracing_log::LogTracer;
 use tracing_subscriber::{
     EnvFilter,
     fmt::{self, format::FmtSpan},
@@ -79,6 +80,9 @@ impl Default for LogOptions {
 /// let _guard = init_logging(options);
 /// ```
 pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
+    // Bridge `log` crate records into `tracing` so legacy logs are captured
+    let _ = LogTracer::init();
+
     let filter = EnvFilter::from_default_env().add_directive(options.level.into());
 
     let mut layers = Vec::new();
@@ -130,11 +134,11 @@ pub fn init_logging(options: LogOptions) -> Option<WorkerGuard> {
         FmtSpan::NONE
     };
 
-    // Set the global subscriber
-    tracing_subscriber::registry()
+    // Set the global subscriber (ignore if already set in this process)
+    let _ = tracing_subscriber::registry()
         .with(filter)
         .with(layers)
-        .init();
+        .try_init();
 
     guard
 }
@@ -211,8 +215,7 @@ pub fn file_logger(path: impl AsRef<Path>) -> WorkerGuard {
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set global default subscriber");
+    let _ = tracing::subscriber::set_global_default(subscriber);
 
     guard
 }

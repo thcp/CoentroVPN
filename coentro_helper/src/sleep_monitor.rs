@@ -1,8 +1,8 @@
 //! Monitors for system sleep and wake events.
-use log::{error, info};
 use std::pin::Pin;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_stream::Stream;
+use tracing::{error, info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepEvent {

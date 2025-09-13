@@ -69,11 +69,15 @@ echo -e "${BLUE}[5/6] Running QUIC echo example (single-process) with dev TLS fe
 cargo run -p shared_utils --features insecure-tls --example quic_example
 
 echo -e "${BLUE}[6/6] Tearing down tunnel${NC}"
-if [[ -n "$SETUP_PID" ]] && ps -p "$SETUP_PID" >/dev/null 2>&1; then
-  kill -INT "$SETUP_PID" || true
-  wait "$SETUP_PID" || true
+# Prefer explicit teardown via a fresh client to avoid Ctrl+C races
+if cargo run -p coentro_client -- teardown-tunnel; then
+  echo -e "${GREEN}Explicit teardown succeeded.${NC}"
 else
-  echo -e "${YELLOW}Setup process no longer running; skipping SIGINT.${NC}"
+  echo -e "${YELLOW}Explicit teardown reported an error; attempting to signal background client...${NC}"
+  if [[ -n "${SETUP_PID:-}" ]] && ps -p "$SETUP_PID" >/dev/null 2>&1; then
+    kill -INT "$SETUP_PID" || true
+    wait "$SETUP_PID" || true
+  fi
 fi
 
 echo -e "${GREEN}Smoke test completed successfully.${NC}"
