@@ -721,7 +721,8 @@ mod tests {
             Err(e) => {
                 println!(
                     "Skipping UDS test at {}: cannot bind ({})",
-                    path.display(), e
+                    path.display(),
+                    e
                 );
                 false
             }
