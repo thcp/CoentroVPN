@@ -1,52 +1,64 @@
 # CoentroVPN Configuration File
 
 # Role: "client" or "server"
-role = "client"
+# Override with ENV: COENTROVPN_ROLE
+role = "server"
 
 # Log level: "debug", "info", "warn", "error"
+# Override with ENV: COENTROVPN_LOG_LEVEL
 log_level = "info"
 
 # Network configuration
 [network]
 # Port for the VPN server to listen on (for server role)
 # or local port to use (for client role)
-port = 8080
+port = 8080 # ENV: COENTROVPN_NETWORK_PORT
 # Interface to bind to
-bind_address = "0.0.0.0"
+bind_address = "0.0.0.0" # ENV: COENTROVPN_NETWORK_BIND_ADDRESS
 # Maximum number of concurrent connections (server only)
-max_connections = 100
+max_connections = 100 # ENV: COENTROVPN_NETWORK_MAX_CONNECTIONS
 
 # Security configuration
 [security]
-# Pre-shared key for authentication
+# Authentication mode and requirement (secure by default)
+# ENV: COENTROVPN_SECURITY_AUTH_MODE ("psk"|"mtls"|"none")
+auth_mode = "psk"
+# ENV: COENTROVPN_SECURITY_AUTH_REQUIRED (true|false)
+auth_required = true
+
+# Pre-shared key for authentication (hex or base64)
+# ENV: COENTROVPN_SECURITY_PSK
 psk = "your-secure-psk-here"
 # Alternatively, you can use TLS certificates:
+# ENV: COENTROVPN_SECURITY_CERT_PATH / COENTROVPN_SECURITY_KEY_PATH
 # cert_path = "/path/to/cert.pem"
 # key_path = "/path/to/key.pem"
 # Enable TLS verification
-verify_tls = true
+verify_tls = true # ENV: COENTROVPN_SECURITY_VERIFY_TLS
 
 # Client-specific configuration (used when role is "client")
 [client]
 # Server address to connect to
-server_address = "127.0.0.1:8080"
+server_address = "127.0.0.1:8080" # ENV: COENTROVPN_CLIENT_SERVER_ADDRESS
 # Reconnect automatically on disconnect
-auto_reconnect = true
+auto_reconnect = true # ENV: COENTROVPN_CLIENT_AUTO_RECONNECT
 # Reconnect interval in seconds
-reconnect_interval = 5
+reconnect_interval = 5 # ENV: COENTROVPN_CLIENT_RECONNECT_INTERVAL
 
 # Server-specific configuration (used when role is "server")
 [server]
 # Virtual IP range for clients
-virtual_ip_range = "10.0.0.0/24"
+virtual_ip_range = "10.0.0.0/24" # ENV: COENTROVPN_SERVER_VIRTUAL_IP_RANGE
 # DNS servers to push to clients
-dns_servers = ["8.8.8.8", "1.1.1.1"]
+dns_servers = ["8.8.8.8", "1.1.1.1"] # ENV: COENTROVPN_SERVER_DNS_SERVERS (comma-separated)
 # Routes to push to clients
-routes = ["192.168.1.0/24"]
+routes = ["192.168.1.0/24"] # ENV: COENTROVPN_SERVER_ROUTES (comma-separated CIDRs)
 
 # Helper daemon configuration
 [helper]
 # List of user IDs allowed to connect to the helper daemon
 # These UIDs will be allowed to connect to the helper daemon in addition to root
 # and the user who installed the helper daemon (SUDO_UID)
-allowed_uids = [501, 1000]  # Added 1000 for coentro_user in Docker container
+allowed_uids = [501, 1000]  # ENV: COENTROVPN_HELPER_ALLOWED_UIDS (comma-separated)
+# ENV: COENTROVPN_HELPER_ALLOWED_GIDS (comma-separated)
+# allowed_gids = []

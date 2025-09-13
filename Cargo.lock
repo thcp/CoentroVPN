@@ -353,7 +353,10 @@ dependencies = [
  "async-trait",
  "clap",
  "coentro_ipc",
+ "rustls",
+ "rustls-pemfile",
  "serde",
+ "sha2",
  "shared_utils",
  "thiserror 1.0.69",
  "tokio",
@@ -425,6 +428,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "quinn",
+ "rustls",
+ "rustls-pemfile",
+ "sha2",
  "shared_utils",
  "thiserror 2.0.12",
  "tokio",
@@ -578,6 +584,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -854,6 +861,21 @@ name = "hermit-abi"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f154ce46856750ed433c8649605bf7ed2de3bc35fd9d2a9f30cddd873c80cb08"
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "icu_collections"
@@ -1809,17 +1831,22 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
+ "bincode",
  "byteorder",
  "crc32fast",
  "criterion",
  "dirs",
  "futures",
+ "hex",
+ "hmac",
  "quinn",
  "rand",
  "rcgen",
  "rustls",
  "serde",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

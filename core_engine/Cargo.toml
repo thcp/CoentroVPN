@@ -19,6 +19,9 @@ tokio = { version = "1.32.0", features = ["full"] }
 
 # QUIC protocol
 quinn = "0.10.2"
+sha2 = "0.10"
+rustls-pemfile = "1.0"
+rustls = "0.21.12"
 
 # Command-line argument parsing
 clap = { version = "4.4.6", features = ["derive"] }

@@ -89,6 +89,14 @@ impl Default for NetworkConfig {
 /// Security configuration settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecurityConfig {
+    /// Authentication mode for the data plane
+    #[serde(default = "default_auth_mode")]
+    pub auth_mode: AuthMode,
+
+    /// Require authentication (fail-closed if credentials are missing)
+    #[serde(default = "default_true")]
+    pub auth_required: bool,
+
     /// Pre-shared key for authentication
     pub psk: Option<String>,
 
@@ -110,12 +118,30 @@ fn default_true() -> bool {
 impl Default for SecurityConfig {
     fn default() -> Self {
         SecurityConfig {
+            auth_mode: AuthMode::Psk,
+            auth_required: default_true(),
             psk: None,
             cert_path: None,
             key_path: None,
             verify_tls: default_true(),
         }
     }
+}
+
+/// Authentication mode for the secure channel
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// Pre-shared key authentication (default)
+    Psk,
+    /// Mutual TLS (client cert)
+    Mtls,
+    /// No authentication (allowed only when explicitly configured)
+    None,
+}
+
+fn default_auth_mode() -> AuthMode {
+    AuthMode::Psk
 }
 
 /// Client-specific configuration settings.
@@ -234,6 +260,12 @@ impl Config {
         // Validate the configuration
         config.validate()?;
 
+        // Apply environment variable overrides (take precedence over file)
+        let mut config = config;
+        Self::apply_env_overrides(&mut config);
+        // Re-validate after overrides
+        config.validate()?;
+
         Ok(config)
     }
 
@@ -270,15 +302,182 @@ impl Config {
         }
 
         // Validate security settings
-        if self.security.psk.is_none()
-            && (self.security.cert_path.is_none() || self.security.key_path.is_none())
-        {
-            return Err(ConfigError::MissingValue(
-                "Either security.psk or both security.cert_path and security.key_path must be provided".to_string(),
-            ));
+        if self.security.auth_required {
+            match self.security.auth_mode {
+                AuthMode::Psk => {
+                    if self.security.psk.is_none() {
+                        return Err(ConfigError::MissingValue(
+                            "security.psk must be provided when auth_mode=psk and auth_required=true"
+                                .to_string(),
+                        ));
+                    }
+                }
+                AuthMode::Mtls => {
+                    if self.security.cert_path.is_none() || self.security.key_path.is_none() {
+                        return Err(ConfigError::MissingValue(
+                            "security.cert_path and security.key_path must be provided when auth_mode=mtls and auth_required=true"
+                                .to_string(),
+                        ));
+                    }
+                }
+                AuthMode::None => {
+                    return Err(ConfigError::InvalidValue {
+                        key: "security.auth_mode".to_string(),
+                        message: "auth_mode=none is not allowed when auth_required=true"
+                            .to_string(),
+                    });
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Apply environment variable overrides (prefix: COENTROVPN_)
+    /// Example keys:
+    /// - COENTROVPN_ROLE, COENTROVPN_LOG_LEVEL
+    /// - COENTROVPN_NETWORK_PORT, COENTROVPN_NETWORK_BIND_ADDRESS, COENTROVPN_NETWORK_MAX_CONNECTIONS
+    /// - COENTROVPN_SECURITY_AUTH_MODE, COENTROVPN_SECURITY_AUTH_REQUIRED, COENTROVPN_SECURITY_PSK,
+    ///   COENTROVPN_SECURITY_CERT_PATH, COENTROVPN_SECURITY_KEY_PATH, COENTROVPN_SECURITY_VERIFY_TLS
+    /// - COENTROVPN_CLIENT_SERVER_ADDRESS, COENTROVPN_CLIENT_AUTO_RECONNECT, COENTROVPN_CLIENT_RECONNECT_INTERVAL
+    /// - COENTROVPN_SERVER_VIRTUAL_IP_RANGE, COENTROVPN_SERVER_DNS_SERVERS, COENTROVPN_SERVER_ROUTES
+    /// - COENTROVPN_HELPER_ALLOWED_UIDS, COENTROVPN_HELPER_ALLOWED_GIDS
+    fn apply_env_overrides(cfg: &mut Config) {
+        use std::env;
+
+        // Simple helpers
+        fn parse_bool(s: &str) -> Option<bool> {
+            match s.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "y" => Some(true),
+                "false" | "0" | "no" | "n" => Some(false),
+                _ => None,
+            }
+        }
+        fn parse_u16(s: &str) -> Option<u16> {
+            s.parse().ok()
+        }
+        fn parse_usize(s: &str) -> Option<usize> {
+            s.parse().ok()
+        }
+        fn parse_u64(s: &str) -> Option<u64> {
+            s.parse().ok()
+        }
+        fn split_csv(s: &str) -> Vec<String> {
+            s.split(',')
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect()
+        }
+        fn split_csv_u32(s: &str) -> Vec<u32> {
+            s.split(',')
+                .filter_map(|v| v.trim().parse::<u32>().ok())
+                .collect()
+        }
+
+        // Top-level
+        if let Ok(v) = env::var("COENTROVPN_ROLE") {
+            cfg.role = match v.to_ascii_lowercase().as_str() {
+                "server" => Role::Server,
+                _ => Role::Client,
+            };
+        }
+        if let Ok(v) = env::var("COENTROVPN_LOG_LEVEL") {
+            cfg.log_level = v;
+        }
+
+        // Network
+        if let Ok(v) = env::var("COENTROVPN_NETWORK_PORT") {
+            if let Some(n) = parse_u16(&v) {
+                cfg.network.port = n;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_NETWORK_BIND_ADDRESS") {
+            cfg.network.bind_address = v;
+        }
+        if let Ok(v) = env::var("COENTROVPN_NETWORK_MAX_CONNECTIONS") {
+            if let Some(n) = parse_usize(&v) {
+                cfg.network.max_connections = n;
+            }
+        }
+
+        // Security
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_AUTH_MODE") {
+            cfg.security.auth_mode = match v.to_ascii_lowercase().as_str() {
+                "psk" => AuthMode::Psk,
+                "mtls" => AuthMode::Mtls,
+                "none" => AuthMode::None,
+                _ => cfg.security.auth_mode,
+            };
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_AUTH_REQUIRED") {
+            if let Some(b) = parse_bool(&v) {
+                cfg.security.auth_required = b;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_PSK") {
+            if !v.is_empty() {
+                cfg.security.psk = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_CERT_PATH") {
+            if !v.is_empty() {
+                cfg.security.cert_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_KEY_PATH") {
+            if !v.is_empty() {
+                cfg.security.key_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_VERIFY_TLS") {
+            if let Some(b) = parse_bool(&v) {
+                cfg.security.verify_tls = b;
+            }
+        }
+
+        // Client
+        if let Ok(v) = env::var("COENTROVPN_CLIENT_SERVER_ADDRESS") {
+            if !v.is_empty() {
+                cfg.client.server_address = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_CLIENT_AUTO_RECONNECT") {
+            if let Some(b) = parse_bool(&v) {
+                cfg.client.auto_reconnect = b;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_CLIENT_RECONNECT_INTERVAL") {
+            if let Some(n) = parse_u64(&v) {
+                cfg.client.reconnect_interval = n;
+            }
+        }
+
+        // Server
+        if let Ok(v) = env::var("COENTROVPN_SERVER_VIRTUAL_IP_RANGE") {
+            if !v.is_empty() {
+                cfg.server.virtual_ip_range = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SERVER_DNS_SERVERS") {
+            let list = split_csv(&v);
+            if !list.is_empty() {
+                cfg.server.dns_servers = list;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SERVER_ROUTES") {
+            let list = split_csv(&v);
+            if !list.is_empty() {
+                cfg.server.routes = list;
+            }
+        }
+
+        // Helper
+        if let Ok(v) = env::var("COENTROVPN_HELPER_ALLOWED_UIDS") {
+            cfg.helper.allowed_uids = split_csv_u32(&v);
+        }
+        if let Ok(v) = env::var("COENTROVPN_HELPER_ALLOWED_GIDS") {
+            cfg.helper.allowed_gids = split_csv_u32(&v);
+        }
     }
 
     /// Reload configuration from the same file it was loaded from

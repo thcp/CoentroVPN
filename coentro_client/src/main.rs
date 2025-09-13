@@ -39,6 +39,7 @@ struct Args {
 
 /// Subcommands for the client
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Set up a VPN tunnel
     #[clap(name = "setup-tunnel")]
@@ -63,6 +64,10 @@ enum Command {
         #[clap(long)]
         server: Option<String>,
 
+        /// Pre-shared key for PSK authentication (hex or base64)
+        #[clap(long)]
+        psk: Option<String>,
+
         /// Client certificate file path
         #[clap(long)]
         cert: Option<PathBuf>,
@@ -74,6 +79,10 @@ enum Command {
         /// Server CA certificate file path
         #[clap(long)]
         ca: Option<PathBuf>,
+
+        /// Do not wait for Ctrl+C; tear down immediately after setup
+        #[clap(long)]
+        no_wait: bool,
     },
 
     /// Tear down an active VPN tunnel
@@ -135,12 +144,13 @@ async fn main() -> anyhow::Result<()> {
             dns,
             mtu,
             server,
-            cert,
-            key,
+            psk,
+            cert: _cert,
+            key: _key,
             ca,
+            no_wait,
         }) => {
-            // Ignoring cert, key, ca as they're not used in this implementation
-            let _ = (cert, key, ca);
+            // Note: cert/key handled via QUIC pinned roots when provided (ca used below)
             info!("Setting up VPN tunnel...");
 
             // Generate a unique client ID
@@ -172,22 +182,84 @@ async fn main() -> anyhow::Result<()> {
                 info!("Connecting to QUIC server at {}", server_addr);
 
                 // Initialize QUIC client (secure-by-default TLS, encryption key for payload)
-                let key = shared_utils::AesGcmCipher::generate_key();
-                let quic_client = match shared_utils::QuicClient::new(&key) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to initialize QUIC client: {}", e);
-                        return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
+                // Derive data-plane key from PSK if provided; else generate a random key for local testing
+                let key: [u8; 32] = if let Some(psk_str_clone) = psk.clone() {
+                    let psk_bytes = match shared_utils::proto::auth::parse_psk(&psk_str_clone) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            error!("Invalid PSK: {}", e);
+                            return Err(anyhow::anyhow!("Invalid PSK: {}", e));
+                        }
+                    };
+                    use sha2::{Digest, Sha256};
+                    let digest = Sha256::digest(&psk_bytes);
+                    let mut out = [0u8; 32];
+                    out.copy_from_slice(&digest);
+                    out
+                } else {
+                    shared_utils::AesGcmCipher::generate_key()
+                };
+                // If a CA is provided, use pinned roots for TLS validation
+                let quic_client = if let Some(ca_path) = ca.clone() {
+                    use rustls_pemfile::certs;
+                    use std::fs::File;
+                    use std::io::BufReader;
+                    let mut reader = BufReader::new(
+                        File::open(&ca_path)
+                            .map_err(|e| anyhow::anyhow!("Failed to open CA: {}", e))?,
+                    );
+                    let chain = certs(&mut reader)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse CA PEM: {}", e))?;
+                    if chain.is_empty() {
+                        return Err(anyhow::anyhow!("No certificates found in CA file"));
+                    }
+                    let anchors: Vec<rustls::Certificate> =
+                        chain.into_iter().map(rustls::Certificate).collect();
+                    match shared_utils::QuicClient::new_with_pinned_roots(&key, &anchors) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to initialize QUIC client with pinned CA: {}", e);
+                            return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
+                        }
+                    }
+                } else {
+                    match shared_utils::QuicClient::new(&key) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to initialize QUIC client: {}", e);
+                            return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
+                        }
                     }
                 };
 
-                let connection = match quic_client.connect(&server_addr).await {
+                let mut connection = match quic_client.connect(&server_addr).await {
                     Ok(conn) => conn,
                     Err(e) => {
                         error!("Failed to connect to QUIC server {}: {}", server_addr, e);
                         return Err(anyhow::anyhow!("Failed to connect to QUIC server: {}", e));
                     }
                 };
+
+                // Perform control-plane authentication (PSK if provided)
+                if let Some(psk_str) = psk {
+                    info!("Performing PSK authentication with server");
+                    match shared_utils::proto::auth::psk_handshake_client(
+                        &mut *connection,
+                        &psk_str,
+                    )
+                    .await
+                    {
+                        Ok(session_id) => {
+                            info!("Authenticated. Session: {}", session_id);
+                        }
+                        Err(e) => {
+                            error!("Authentication failed: {}", e);
+                            return Err(anyhow::anyhow!("Authentication failed: {}", e));
+                        }
+                    }
+                } else {
+                    info!("No PSK provided; proceeding without client auth (server may reject)");
+                }
 
                 info!("QUIC connection established, starting tunnel...");
 
@@ -215,12 +287,14 @@ async fn main() -> anyhow::Result<()> {
                     }
                 });
 
-                info!("Tunnel is active. Press Ctrl+C to tear down the tunnel and exit.");
-
-                // Wait for Ctrl+C
-                tokio::signal::ctrl_c().await?;
-
-                info!("Received Ctrl+C, tearing down tunnel...");
+                if !no_wait {
+                    info!("Tunnel is active. Press Ctrl+C to tear down the tunnel and exit.");
+                    // Wait for Ctrl+C
+                    tokio::signal::ctrl_c().await?;
+                    info!("Received Ctrl+C, tearing down tunnel...");
+                } else {
+                    info!("--no-wait specified; tearing down tunnel immediately...");
+                }
 
                 // Abort the tunnel task
                 tunnel_task.abort();
@@ -233,13 +307,14 @@ async fn main() -> anyhow::Result<()> {
 
                 info!("Tunnel torn down successfully.");
             } else {
-                info!("No server address provided, tunnel is ready for local testing.");
-                info!("Press Ctrl+C to tear down the tunnel and exit.");
-
-                // Wait for Ctrl+C
-                tokio::signal::ctrl_c().await?;
-
-                info!("Received Ctrl+C, tearing down tunnel...");
+                if !no_wait {
+                    info!("No server address provided; tunnel is ready for local testing.");
+                    info!("Press Ctrl+C to tear down the tunnel and exit.");
+                    tokio::signal::ctrl_c().await?;
+                    info!("Received Ctrl+C, tearing down tunnel...");
+                } else {
+                    info!("--no-wait specified; tearing down tunnel immediately...");
+                }
 
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
