@@ -48,6 +48,12 @@ fn test_load_valid_server_config() {
         vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]
     );
     assert_eq!(config.server.routes, vec!["192.168.1.0/24".to_string()]);
+    assert!(config.server.dns_search_domains.is_empty());
+    assert_eq!(
+        config.server.helper_socket,
+        "/var/run/coentrovpn/server_helper.sock"
+    );
+    assert!(!config.server.enable_nat);
 }
 
 #[test]

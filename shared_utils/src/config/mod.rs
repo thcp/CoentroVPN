@@ -242,6 +242,10 @@ pub struct ServerConfig {
     /// Helper socket path override
     #[serde(default = "default_helper_socket")]
     pub helper_socket: String,
+
+    /// Enable NAT (MASQUERADE/PF) for server traffic
+    #[serde(default)]
+    pub enable_nat: bool,
 }
 
 impl Default for ServerConfig {
@@ -252,6 +256,7 @@ impl Default for ServerConfig {
             routes: Vec::new(),
             dns_search_domains: Vec::new(),
             helper_socket: default_helper_socket(),
+            enable_nat: false,
         }
     }
 }
@@ -666,6 +671,11 @@ impl Config {
         if let Ok(v) = env::var("COENTROVPN_SERVER_HELPER_SOCKET") {
             if !v.is_empty() {
                 cfg.server.helper_socket = v;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SERVER_ENABLE_NAT") {
+            if let Some(b) = parse_bool(&v) {
+                cfg.server.enable_nat = b;
             }
         }
 

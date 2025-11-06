@@ -1,6 +1,6 @@
 use super::{
-    DnsRollback, InterfaceError, InterfaceManager, InterfaceResult, PolicyState, TunConfig,
-    TunDescriptor,
+    DnsRollback, InterfaceError, InterfaceManager, InterfaceResult, NatState, PolicyState,
+    TunConfig, TunDescriptor,
 };
 use crate::ipc::messages::{DnsConfig, RouteSpec};
 use async_trait::async_trait;
@@ -422,6 +422,18 @@ impl InterfaceManager for MacOsInterfaceManager {
         } else {
             Ok(())
         }
+    }
+
+    async fn apply_nat(&self, interface: &str, cidr: &str) -> InterfaceResult<Option<NatState>> {
+        warn!(
+            interface,
+            cidr, "NAT MASQUERADE not currently supported on macOS; skipping"
+        );
+        Ok(None)
+    }
+
+    async fn rollback_nat(&self, _interface: &str, _state: &NatState) -> InterfaceResult<()> {
+        Ok(())
     }
 }
 

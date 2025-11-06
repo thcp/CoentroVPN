@@ -1,6 +1,6 @@
 use super::{
-    DnsRollback, InterfaceError, InterfaceManager, InterfaceResult, PolicyState, TunConfig,
-    TunDescriptor,
+    DnsRollback, InterfaceError, InterfaceManager, InterfaceResult, NatState, PolicyState,
+    TunConfig, TunDescriptor,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::os::unix::io::AsRawFd;
 use tokio::fs;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use tun::{Configuration, Layer};
 
 use crate::ipc::messages::{DnsConfig, RouteSpec};
@@ -164,6 +164,53 @@ impl LinuxInterfaceManager {
             .await
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    async fn iptables_rule_exists(&self, cidr: &str) -> InterfaceResult<bool> {
+        let output = TokioCommand::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-C",
+                "POSTROUTING",
+                "-s",
+                cidr,
+                "-j",
+                "MASQUERADE",
+            ])
+            .output()
+            .await
+            .map_err(InterfaceError::Io)?;
+
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        if output.status.code() == Some(1) {
+            return Ok(false);
+        }
+
+        Err(InterfaceError::CommandFailure {
+            command: format!("iptables -t nat -C POSTROUTING -s {cidr} -j MASQUERADE"),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+
+    async fn run_iptables(&self, args: &[&str]) -> InterfaceResult<()> {
+        let output = TokioCommand::new("iptables")
+            .args(args)
+            .output()
+            .await
+            .map_err(InterfaceError::Io)?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(InterfaceError::CommandFailure {
+            command: format!("iptables {:?}", args),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
     }
 }
 
@@ -438,6 +485,52 @@ impl InterfaceManager for LinuxInterfaceManager {
         } else {
             Ok(())
         }
+    }
+
+    async fn apply_nat(&self, _interface: &str, cidr: &str) -> InterfaceResult<Option<NatState>> {
+        if self.iptables_rule_exists(cidr).await? {
+            return Ok(None);
+        }
+
+        self.run_iptables(&[
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            cidr,
+            "-j",
+            "MASQUERADE",
+        ])
+        .await?;
+
+        Ok(Some(NatState::LinuxMasquerade {
+            cidr: cidr.to_string(),
+        }))
+    }
+
+    async fn rollback_nat(&self, _interface: &str, state: &NatState) -> InterfaceResult<()> {
+        match state {
+            NatState::LinuxMasquerade { cidr } => {
+                if let Err(err) = self
+                    .run_iptables(&[
+                        "-t",
+                        "nat",
+                        "-D",
+                        "POSTROUTING",
+                        "-s",
+                        cidr,
+                        "-j",
+                        "MASQUERADE",
+                    ])
+                    .await
+                {
+                    warn!(%cidr, "failed to remove MASQUERADE rule: {err}");
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

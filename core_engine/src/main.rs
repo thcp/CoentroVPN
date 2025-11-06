@@ -351,7 +351,7 @@ fn build_create_tunnel_request(
         routes,
         dns,
         mtu: Some(1500),
-        enable_nat: false,
+        enable_nat: config.server.enable_nat,
     })
 }
 

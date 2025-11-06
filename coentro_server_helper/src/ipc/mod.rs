@@ -332,6 +332,20 @@ impl HelperState {
 
         let stale_sessions = self.persistence.drain().await;
         for session in stale_sessions {
+            if let Some(nat_state) = session.policy.nat.as_ref() {
+                if let Err(err) = self
+                    .interface_manager
+                    .rollback_nat(&session.interface, nat_state)
+                    .await
+                {
+                    warn!(
+                        session = %session.session_id,
+                        interface = %session.interface,
+                        "failed to rollback persisted NAT: {err}"
+                    );
+                }
+            }
+
             if let Err(err) = self
                 .interface_manager
                 .rollback_policy(&session.interface, &session.policy)
@@ -343,6 +357,7 @@ impl HelperState {
                     "failed to rollback persisted policy: {err}"
                 );
             }
+
             let _ = self
                 .interface_manager
                 .teardown_tun(&session.interface)
@@ -370,6 +385,12 @@ impl HelperState {
 
         for (session_id, mut entry) in drained {
             entry.close_transport();
+            if let Some(nat_state) = entry.policy_state.nat.as_ref() {
+                let _ = self
+                    .interface_manager
+                    .rollback_nat(&entry.interface_name, nat_state)
+                    .await;
+            }
             let _ = self
                 .interface_manager
                 .rollback_policy(&entry.interface_name, &entry.policy_state)
@@ -424,7 +445,7 @@ impl HelperState {
             }
         };
 
-        let policy_state = match self
+        let mut policy_state = match self
             .interface_manager
             .apply_policy(&entry.interface_name, &request.routes, request.dns.as_ref())
             .await
@@ -438,6 +459,30 @@ impl HelperState {
                 return Err(ActionError::Interface(err));
             }
         };
+
+        if request.enable_nat {
+            match self
+                .interface_manager
+                .apply_nat(&entry.interface_name, &entry.ipv4_cidr)
+                .await
+            {
+                Ok(Some(nat_state)) => {
+                    policy_state.nat = Some(nat_state);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    let _ = self
+                        .interface_manager
+                        .rollback_policy(&entry.interface_name, &policy_state)
+                        .await;
+                    let _ = self
+                        .interface_manager
+                        .teardown_tun(&entry.interface_name)
+                        .await;
+                    return Err(ActionError::Interface(err));
+                }
+            }
+        }
         entry.policy_state = policy_state.clone();
         self.persistence
             .register_session(&request.session_id, &entry.interface_name, policy_state)
@@ -522,6 +567,19 @@ impl HelperState {
         })?;
 
         entry.close_transport();
+        if let Some(nat_state) = entry.policy_state.nat.as_ref() {
+            if let Err(err) = self
+                .interface_manager
+                .rollback_nat(&entry.interface_name, nat_state)
+                .await
+            {
+                warn!(
+                    session = %request.session_id,
+                    interface = %entry.interface_name,
+                    "failed to rollback NAT during destroy: {err}"
+                );
+            }
+        }
         if let Err(err) = self
             .interface_manager
             .rollback_policy(&entry.interface_name, &entry.policy_state)

@@ -108,6 +108,12 @@ pub enum DnsRollback {
 pub struct PolicyState {
     pub routes: Vec<RouteSpec>,
     pub dns: Option<DnsRollback>,
+    pub nat: Option<NatState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NatState {
+    LinuxMasquerade { cidr: String },
 }
 
 /// Abstraction implemented per platform.
@@ -139,6 +145,12 @@ pub trait InterfaceManager: Send + Sync {
 
     /// Roll back routing/DNS policy using the previously captured state.
     async fn rollback_policy(&self, interface: &str, state: &PolicyState) -> InterfaceResult<()>;
+
+    /// Apply NAT behaviour for the provided CIDR, returning rollback metadata when supported.
+    async fn apply_nat(&self, interface: &str, cidr: &str) -> InterfaceResult<Option<NatState>>;
+
+    /// Roll back previously applied NAT state.
+    async fn rollback_nat(&self, interface: &str, state: &NatState) -> InterfaceResult<()>;
 }
 
 /// Construct the concrete interface manager for the current platform.
