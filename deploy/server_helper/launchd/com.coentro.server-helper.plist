@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.coentro.server-helper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/sbin/coentro_server_helper</string>
+        <string>--config</string>
+        <string>/Library/Application Support/CoentroVPN/server-helper.toml</string>
+        <string>--socket-path</string>
+        <string>/var/run/coentrovpn/server_helper.sock</string>
+        <string>--foreground</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/CoentroVPN/server-helper.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/CoentroVPN/server-helper.err.log</string>
+
+    <key>LimitLoadToSessionType</key>
+    <string>System</string>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>NetworkState</key>
+        <true/>
+    </dict>
+
+    <key>Sockets</key>
+    <dict>
+        <key>ServerHelperSocket</key>
+        <dict>
+            <key>SockPathMode</key>
+            <integer>384</integer>
+            <key>SockPathName</key>
+            <string>/var/run/coentrovpn/server_helper.sock</string>
+            <key>SockFamily</key>
+            <string>Unix</string>
+            <key>SockType</key>
+            <string>stream</string>
+        </dict>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>COENTRO_HELPER_ALLOWED_UIDS</key>
+        <string>0</string>
+        <key>COENTRO_HELPER_ALLOWED_GIDS</key>
+        <string>0</string>
+    </dict>
+
+    <key>SessionCreate</key>
+    <false/>
+
+    <key>AbandonProcessGroup</key>
+    <false/>
+</dict>
+</plist>

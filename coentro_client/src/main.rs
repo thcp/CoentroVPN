@@ -83,6 +83,22 @@ enum Command {
         /// Do not wait for Ctrl+C; tear down immediately after setup
         #[clap(long)]
         no_wait: bool,
+
+        /// Use split-default routing (0.0.0.0/1 and 128.0.0.0/1)
+        #[clap(long)]
+        split_default: bool,
+
+        /// Explicit route mode: "default" or "split" (overrides split-default flag)
+        #[clap(long)]
+        route_mode: Option<String>,
+
+        /// Additional include routes (comma-separated CIDRs)
+        #[clap(long, value_delimiter = ',')]
+        include_routes: Option<Vec<String>>,
+
+        /// Routes to exclude (comma-separated CIDRs)
+        #[clap(long, value_delimiter = ',')]
+        exclude_routes: Option<Vec<String>>,
     },
 
     /// Tear down an active VPN tunnel
@@ -149,6 +165,10 @@ async fn main() -> anyhow::Result<()> {
             key: _key,
             ca,
             no_wait,
+            split_default,
+            route_mode,
+            include_routes,
+            exclude_routes,
         }) => {
             // Note: cert/key handled via QUIC pinned roots when provided (ca used below)
             info!("Setting up VPN tunnel...");
@@ -156,12 +176,43 @@ async fn main() -> anyhow::Result<()> {
             // Generate a unique client ID
             let client_id = Uuid::new_v4().to_string();
 
-            // Default routes if none specified
-            let routes = routes.unwrap_or_else(|| vec!["0.0.0.0/0".to_string()]);
+            // Determine route mode and explicit routes
+            // If user provided --routes, send them explicitly and leave route_mode None
+            // Otherwise set route_mode so helper computes default/split, and leave routes empty
+            let (routes, route_mode_opt) = if let Some(r) = routes {
+                (r, None)
+            } else {
+                let rm = match route_mode.as_deref() {
+                    Some("split") => Some(coentro_ipc::messages::RouteMode::Split),
+                    Some("default") => Some(coentro_ipc::messages::RouteMode::Default),
+                    Some(_) => {
+                        return Err(anyhow::anyhow!(
+                            "Invalid --route-mode. Use 'default' or 'split'"
+                        ));
+                    }
+                    None => {
+                        if split_default {
+                            Some(coentro_ipc::messages::RouteMode::Split)
+                        } else {
+                            Some(coentro_ipc::messages::RouteMode::Default)
+                        }
+                    }
+                };
+                (Vec::new(), rm)
+            };
 
             // Set up the tunnel
             let tunnel_details = match helper_client
-                .setup_tunnel(&client_id, ip, routes, dns, mtu)
+                .setup_tunnel(
+                    &client_id,
+                    ip,
+                    routes,
+                    route_mode_opt,
+                    include_routes,
+                    exclude_routes,
+                    dns,
+                    mtu,
+                )
                 .await
             {
                 Ok(details) => {

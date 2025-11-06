@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
 /// Errors that can occur during configuration operations.
@@ -109,6 +110,18 @@ pub struct SecurityConfig {
     /// Enable TLS verification (default: true)
     #[serde(default = "default_true")]
     pub verify_tls: bool,
+
+    /// Challenge TTL in milliseconds for PSK authentication
+    #[serde(default = "default_challenge_ttl_ms")]
+    pub challenge_ttl_ms: u64,
+
+    /// Maximum entries retained in the replay cache
+    #[serde(default = "default_replay_cache_max_entries")]
+    pub replay_cache_max_entries: usize,
+
+    /// Optional path to persist replay cache state
+    #[serde(default)]
+    pub replay_cache_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -124,7 +137,18 @@ impl Default for SecurityConfig {
             cert_path: None,
             key_path: None,
             verify_tls: default_true(),
+            challenge_ttl_ms: default_challenge_ttl_ms(),
+            replay_cache_max_entries: default_replay_cache_max_entries(),
+            replay_cache_path: None,
         }
+    }
+}
+
+impl SecurityConfig {
+    /// Returns the challenge TTL as a [`Duration`].
+    pub fn challenge_ttl(&self) -> Duration {
+        // Safe because validation enforces non-zero TTL and upper bounds are left to caller policy.
+        Duration::from_millis(self.challenge_ttl_ms)
     }
 }
 
@@ -144,6 +168,14 @@ fn default_auth_mode() -> AuthMode {
     AuthMode::Psk
 }
 
+fn default_challenge_ttl_ms() -> u64 {
+    60_000
+}
+
+fn default_replay_cache_max_entries() -> usize {
+    2048
+}
+
 /// Client-specific configuration settings.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClientConfig {
@@ -157,14 +189,40 @@ pub struct ClientConfig {
     /// Reconnect interval in seconds (default: 5)
     #[serde(default = "default_reconnect_interval")]
     pub reconnect_interval: u64,
+
+    /// Route policy: "default" (0.0.0.0/0) or "split" (0.0.0.0/1 + 128.0.0.0/1)
+    #[serde(default = "default_route_mode")]
+    pub route_mode: RouteMode,
+
+    /// Additional routes to include (CIDRs)
+    #[serde(default)]
+    pub include_routes: Vec<String>,
+
+    /// Routes to exclude (CIDRs)
+    #[serde(default)]
+    pub exclude_routes: Vec<String>,
 }
 
 fn default_reconnect_interval() -> u64 {
     5
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteMode {
+    #[default]
+    Default,
+    Split,
+}
+
+fn default_route_mode() -> RouteMode {
+    RouteMode::Default
+}
+
+// Default derived on RouteMode
+
 /// Server-specific configuration settings.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
     /// Virtual IP range for clients
     pub virtual_ip_range: Option<String>,
@@ -176,6 +234,30 @@ pub struct ServerConfig {
     /// Routes to push to clients
     #[serde(default)]
     pub routes: Vec<String>,
+
+    /// DNS search domains pushed to clients
+    #[serde(default)]
+    pub dns_search_domains: Vec<String>,
+
+    /// Helper socket path override
+    #[serde(default = "default_helper_socket")]
+    pub helper_socket: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            virtual_ip_range: None,
+            dns_servers: Vec::new(),
+            routes: Vec::new(),
+            dns_search_domains: Vec::new(),
+            helper_socket: default_helper_socket(),
+        }
+    }
+}
+
+fn default_helper_socket() -> String {
+    "/var/run/coentrovpn/server_helper.sock".into()
 }
 
 /// Helper daemon configuration settings.
@@ -188,6 +270,19 @@ pub struct HelperConfig {
     /// List of group IDs allowed to connect to the helper daemon
     #[serde(default)]
     pub allowed_gids: Vec<u32>,
+
+    /// Optional shared HMAC tokens for authenticating remote helper requests
+    #[serde(default)]
+    pub session_tokens: Vec<HelperToken>,
+}
+
+/// Pre-shared token used to authenticate helper IPC requests.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HelperToken {
+    /// Logical identifier for the token (carried in IPC headers)
+    pub id: String,
+    /// Secret material encoded as base64
+    pub secret: String,
 }
 
 /// Main configuration structure for CoentroVPN.
@@ -220,10 +315,35 @@ pub struct Config {
     /// Log level (default: "info")
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Metrics exporter configuration
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_metrics_listen_addr")]
+    pub listen_addr: String,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_addr: default_metrics_listen_addr(),
+        }
+    }
+}
+
+fn default_metrics_listen_addr() -> String {
+    "127.0.0.1:9100".to_string()
 }
 
 impl Default for Config {
@@ -236,6 +356,7 @@ impl Default for Config {
             server: ServerConfig::default(),
             helper: HelperConfig::default(),
             log_level: default_log_level(),
+            metrics: MetricsConfig::default(),
         }
     }
 }
@@ -330,6 +451,27 @@ impl Config {
             }
         }
 
+        if self.security.challenge_ttl_ms == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "security.challenge_ttl_ms".to_string(),
+                message: "must be greater than 0".to_string(),
+            });
+        }
+
+        if self.security.replay_cache_max_entries == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "security.replay_cache_max_entries".to_string(),
+                message: "must be greater than 0".to_string(),
+            });
+        }
+
+        if self.server.helper_socket.trim().is_empty() {
+            return Err(ConfigError::InvalidValue {
+                key: "server.helper_socket".to_string(),
+                message: "helper socket path cannot be empty".to_string(),
+            });
+        }
+
         Ok(())
     }
 
@@ -384,6 +526,16 @@ impl Config {
         if let Ok(v) = env::var("COENTROVPN_LOG_LEVEL") {
             cfg.log_level = v;
         }
+        if let Ok(v) = env::var("COENTROVPN_METRICS_ENABLED") {
+            if let Some(b) = parse_bool(&v) {
+                cfg.metrics.enabled = b;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_METRICS_LISTEN_ADDR") {
+            if !v.is_empty() {
+                cfg.metrics.listen_addr = v;
+            }
+        }
 
         // Network
         if let Ok(v) = env::var("COENTROVPN_NETWORK_PORT") {
@@ -434,6 +586,21 @@ impl Config {
                 cfg.security.verify_tls = b;
             }
         }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_CHALLENGE_TTL_MS") {
+            if let Some(n) = parse_u64(&v) {
+                cfg.security.challenge_ttl_ms = n;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_REPLAY_CACHE_MAX_ENTRIES") {
+            if let Some(n) = parse_usize(&v) {
+                cfg.security.replay_cache_max_entries = n;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_REPLAY_CACHE_PATH") {
+            if !v.is_empty() {
+                cfg.security.replay_cache_path = Some(v);
+            }
+        }
 
         // Client
         if let Ok(v) = env::var("COENTROVPN_CLIENT_SERVER_ADDRESS") {
@@ -452,6 +619,26 @@ impl Config {
             }
         }
 
+        // Client route policy (optional)
+        if let Ok(v) = env::var("COENTROVPN_CLIENT_ROUTE_MODE") {
+            cfg.client.route_mode = match v.to_ascii_lowercase().as_str() {
+                "split" => RouteMode::Split,
+                _ => RouteMode::Default,
+            };
+        }
+        if let Ok(v) = env::var("COENTROVPN_CLIENT_INCLUDE_ROUTES") {
+            let list = split_csv(&v);
+            if !list.is_empty() {
+                cfg.client.include_routes = list;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_CLIENT_EXCLUDE_ROUTES") {
+            let list = split_csv(&v);
+            if !list.is_empty() {
+                cfg.client.exclude_routes = list;
+            }
+        }
+
         // Server
         if let Ok(v) = env::var("COENTROVPN_SERVER_VIRTUAL_IP_RANGE") {
             if !v.is_empty() {
@@ -464,10 +651,21 @@ impl Config {
                 cfg.server.dns_servers = list;
             }
         }
+        if let Ok(v) = env::var("COENTROVPN_SERVER_DNS_SEARCH_DOMAINS") {
+            let list = split_csv(&v);
+            if !list.is_empty() {
+                cfg.server.dns_search_domains = list;
+            }
+        }
         if let Ok(v) = env::var("COENTROVPN_SERVER_ROUTES") {
             let list = split_csv(&v);
             if !list.is_empty() {
                 cfg.server.routes = list;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SERVER_HELPER_SOCKET") {
+            if !v.is_empty() {
+                cfg.server.helper_socket = v;
             }
         }
 

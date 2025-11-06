@@ -84,7 +84,7 @@ impl std::fmt::Debug for TunnelHandle {
 
 impl TunnelHandle {
     /// Create a new tunnel handle.
-    fn new(
+    pub(crate) fn new(
         id: TunnelId,
         peer_or_listen_addr: SocketAddr,
         tx: mpsc::Sender<Vec<u8>>,

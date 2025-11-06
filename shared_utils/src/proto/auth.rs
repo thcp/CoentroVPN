@@ -7,14 +7,19 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::time::{Duration, SystemTime};
+use std::collections::VecDeque;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const NONCE_LEN: usize = 32;
 const AUTH_VERSION: u8 = 1;
-const CHALLENGE_TTL: Duration = Duration::from_secs(60);
+const DEFAULT_CHALLENGE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ControlAuthMessage {
@@ -119,7 +124,7 @@ pub async fn psk_handshake_client(
         return Err(TransportError::Protocol("expected AuthChallenge".into()));
     };
     let age = Duration::from_millis(now_millis().saturating_sub(issued_at_ms));
-    if age > CHALLENGE_TTL {
+    if age > DEFAULT_CHALLENGE_TTL {
         return Err(TransportError::Protocol("stale challenge".into()));
     }
 
@@ -160,8 +165,12 @@ impl PskChallenge {
     }
 
     pub fn is_fresh(&self) -> bool {
+        self.is_fresh_with(DEFAULT_CHALLENGE_TTL)
+    }
+
+    pub fn is_fresh_with(&self, ttl: Duration) -> bool {
         let age = Duration::from_millis(now_millis().saturating_sub(self.issued_at_ms));
-        age <= CHALLENGE_TTL
+        age <= ttl
     }
 
     pub fn verify(&self, psk: &[u8], mac: &[u8]) -> Result<bool, TransportError> {
@@ -183,8 +192,233 @@ pub async fn psk_handshake_server<F>(
 where
     F: Fn() -> Result<Vec<u8>, TransportError>,
 {
+    psk_handshake_server_with_config(conn, get_psk, &ServerAuthConfig::default()).await
+}
+
+/// Server-side configuration for the PSK handshake.
+#[derive(Clone, Debug)]
+pub struct ServerAuthConfig {
+    /// Allowed lifetime of a challenge before it is considered stale.
+    pub challenge_ttl: Duration,
+    /// Optional metrics collector.
+    pub metrics: Option<Arc<AuthMetrics>>,
+    /// Optional replay cache to detect nonce replays.
+    pub replay_cache: Option<Arc<dyn ReplayCacheProvider>>,
+}
+
+impl Default for ServerAuthConfig {
+    fn default() -> Self {
+        Self {
+            challenge_ttl: DEFAULT_CHALLENGE_TTL,
+            metrics: None,
+            replay_cache: None,
+        }
+    }
+}
+
+impl ServerAuthConfig {
+    /// Create a new configuration with the provided challenge TTL.
+    pub fn new(challenge_ttl: Duration) -> Self {
+        Self {
+            challenge_ttl,
+            metrics: None,
+            replay_cache: None,
+        }
+    }
+
+    /// Attach an [`AuthMetrics`] collector to this configuration.
+    pub fn with_metrics(mut self, metrics: Arc<AuthMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Attach a replay cache to this configuration.
+    pub fn with_replay_cache(mut self, cache: Arc<dyn ReplayCacheProvider>) -> Self {
+        self.replay_cache = Some(cache);
+        self
+    }
+}
+
+/// Simple metrics tracker for authentication outcomes.
+#[derive(Debug, Default)]
+pub struct AuthMetrics {
+    attempts: AtomicU64,
+    successes: AtomicU64,
+    failures: AtomicU64,
+}
+
+impl AuthMetrics {
+    pub fn record_attempt(&self) {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("coentrovpn_auth_attempts_total", 1);
+    }
+
+    pub fn record_success(&self) {
+        self.successes.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("coentrovpn_auth_successes_total", 1);
+    }
+
+    pub fn record_failure(&self) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("coentrovpn_auth_failures_total", 1);
+    }
+
+    pub fn attempts(&self) -> u64 {
+        self.attempts.load(Ordering::Relaxed)
+    }
+
+    pub fn successes(&self) -> u64 {
+        self.successes.load(Ordering::Relaxed)
+    }
+
+    pub fn failures(&self) -> u64 {
+        self.failures.load(Ordering::Relaxed)
+    }
+}
+
+/// Replay cache backend abstraction.
+pub trait ReplayCacheProvider: std::fmt::Debug + Send + Sync {
+    fn register(&self, nonce: &[u8], ttl: Duration) -> bool;
+}
+
+/// Simple in-memory replay cache to detect reused nonces.
+#[derive(Debug)]
+pub struct ReplayCache {
+    entries: Mutex<VecDeque<(Vec<u8>, Instant)>>,
+    max_entries: usize,
+}
+
+impl ReplayCache {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::with_capacity(max_entries)),
+            max_entries,
+        }
+    }
+
+    fn insert(&self, nonce: &[u8], ttl: Duration) -> bool {
+        let mut guard = self.entries.lock().unwrap();
+        let now = Instant::now();
+        while let Some((_, timestamp)) = guard.front() {
+            if now.duration_since(*timestamp) > ttl {
+                guard.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if guard.iter().any(|(entry, _)| entry.as_slice() == nonce) {
+            return false;
+        }
+
+        if guard.len() >= self.max_entries {
+            guard.pop_front();
+        }
+
+        guard.push_back((nonce.to_vec(), now));
+        true
+    }
+}
+
+impl ReplayCacheProvider for ReplayCache {
+    fn register(&self, nonce: &[u8], ttl: Duration) -> bool {
+        self.insert(nonce, ttl)
+    }
+}
+
+/// File-backed replay cache that persists entries across restarts.
+#[derive(Debug)]
+pub struct PersistentReplayCache {
+    inner: ReplayCache,
+    path: PathBuf,
+    load_ttl: Duration,
+}
+
+impl PersistentReplayCache {
+    pub fn new<P: Into<PathBuf>>(path: P, max_entries: usize, load_ttl: Duration) -> Self {
+        let path = path.into();
+        let inner = ReplayCache::new(max_entries);
+        let cache = Self {
+            inner,
+            path,
+            load_ttl,
+        };
+        cache.load_from_disk();
+        cache
+    }
+
+    fn load_from_disk(&self) {
+        if let Ok(contents) = fs::read(&self.path) {
+            if let Ok(entries) = bincode::deserialize::<Vec<(Vec<u8>, u64)>>(&contents) {
+                let mut guard = self.inner.entries.lock().unwrap();
+                guard.clear();
+                let now = SystemTime::now();
+                for (nonce, timestamp_ms) in entries {
+                    let ts = SystemTime::UNIX_EPOCH + Duration::from_millis(timestamp_ms);
+                    let age = now.duration_since(ts).unwrap_or_default();
+                    if age <= self.load_ttl {
+                        let entry_instant = Instant::now()
+                            .checked_sub(age)
+                            .unwrap_or_else(|| Instant::now());
+                        guard.push_back((nonce, entry_instant));
+                    }
+                }
+            }
+        }
+    }
+
+    fn persist(&self) {
+        if let Ok(guard) = self.inner.entries.lock() {
+            let now = SystemTime::now();
+            let data: Vec<_> = guard
+                .iter()
+                .map(|(nonce, instant)| {
+                    let ts = now
+                        .checked_sub(instant.elapsed())
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
+                    let millis = ts
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    (nonce.clone(), millis)
+                })
+                .collect();
+            if let Ok(bytes) = bincode::serialize(&data) {
+                if let Some(parent) = self.path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&self.path, bytes);
+            }
+        }
+    }
+}
+
+impl ReplayCacheProvider for PersistentReplayCache {
+    fn register(&self, nonce: &[u8], ttl: Duration) -> bool {
+        let result = self.inner.insert(nonce, ttl);
+        if result {
+            self.persist();
+        }
+        result
+    }
+}
+
+pub async fn psk_handshake_server_with_config<F>(
+    conn: &mut dyn Connection,
+    get_psk: F,
+    config: &ServerAuthConfig,
+) -> Result<String, TransportError>
+where
+    F: Fn() -> Result<Vec<u8>, TransportError>,
+{
+    if let Some(metrics) = &config.metrics {
+        metrics.record_attempt();
+    }
     // 1) Expect ClientHello
     let Some(bytes) = conn.recv_data().await? else {
+        if let Some(metrics) = &config.metrics {
+            metrics.record_failure();
+        }
         return Err(TransportError::Protocol("connection closed".into()));
     };
     match decode_ctrl(&bytes)? {
@@ -192,10 +426,18 @@ where
             version, method, ..
         } => {
             if version != AUTH_VERSION || method != AuthMethod::Psk {
+                if let Some(metrics) = &config.metrics {
+                    metrics.record_failure();
+                }
                 return Err(TransportError::Protocol("unsupported auth".into()));
             }
         }
-        _ => return Err(TransportError::Protocol("expected ClientHello".into())),
+        _ => {
+            if let Some(metrics) = &config.metrics {
+                metrics.record_failure();
+            }
+            return Err(TransportError::Protocol("expected ClientHello".into()));
+        }
     }
 
     // 2) Send challenge
@@ -208,17 +450,26 @@ where
 
     // 3) Receive response and verify
     let Some(bytes) = conn.recv_data().await? else {
+        if let Some(metrics) = &config.metrics {
+            metrics.record_failure();
+        }
         return Err(TransportError::Protocol("connection closed".into()));
     };
     let ControlAuthMessage::AuthResponse { mac } = decode_ctrl(&bytes)? else {
+        if let Some(metrics) = &config.metrics {
+            metrics.record_failure();
+        }
         return Err(TransportError::Protocol("expected AuthResponse".into()));
     };
-    if !challenge.is_fresh() {
+    if !challenge.is_fresh_with(config.challenge_ttl) {
         let _ = conn
             .send_data(&encode_ctrl(&ControlAuthMessage::AuthReject {
                 reason: "stale challenge".into(),
             })?)
             .await;
+        if let Some(metrics) = &config.metrics {
+            metrics.record_failure();
+        }
         return Err(TransportError::Protocol("stale challenge".into()));
     }
     let psk = get_psk()?;
@@ -230,6 +481,9 @@ where
                 reason: "invalid mac".into(),
             })?)
             .await;
+        if let Some(metrics) = &config.metrics {
+            metrics.record_failure();
+        }
         return Err(TransportError::Protocol("invalid mac".into()));
     }
 
@@ -240,6 +494,9 @@ where
     })?)
     .await?;
     info!("Client authenticated; session_id={}", session_id);
+    if let Some(metrics) = &config.metrics {
+        metrics.record_success();
+    }
     Ok(session_id)
 }
 
@@ -257,5 +514,41 @@ mod tests {
         let mut wrong = mac.clone();
         wrong[0] ^= 0xFF;
         assert!(!chall.verify(psk, &wrong).unwrap());
+    }
+
+    #[test]
+    fn test_challenge_staleness() {
+        // Construct a stale challenge by setting issued_at in the far past
+        let chall = PskChallenge {
+            nonce: [0u8; NONCE_LEN],
+            issued_at_ms: 0,
+        };
+        assert!(!chall.is_fresh());
+        assert!(!chall.is_fresh_with(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn auth_metrics_recording() {
+        let metrics = AuthMetrics::default();
+        assert_eq!(metrics.attempts(), 0);
+        assert_eq!(metrics.successes(), 0);
+        assert_eq!(metrics.failures(), 0);
+        metrics.record_attempt();
+        metrics.record_success();
+        metrics.record_failure();
+        assert_eq!(metrics.attempts(), 1);
+        assert_eq!(metrics.successes(), 1);
+        assert_eq!(metrics.failures(), 1);
+    }
+
+    #[test]
+    fn replay_cache_register() {
+        let cache = ReplayCache::new(2);
+        let ttl = Duration::from_secs(1);
+        assert!(cache.register(&[1, 2, 3], ttl));
+        assert!(!cache.register(&[1, 2, 3], ttl));
+        assert!(cache.register(&[4, 5, 6], ttl));
+        std::thread::sleep(ttl + Duration::from_millis(10));
+        assert!(cache.register(&[1, 2, 3], ttl));
     }
 }

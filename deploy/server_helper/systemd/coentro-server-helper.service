@@ -1,0 +1,42 @@
+[Unit]
+Description=CoentroVPN Server Helper Daemon
+Documentation=https://coentro.example.com/docs/server-helper
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/coentro_server_helper
+
+[Service]
+Type=simple
+User=coentrovpn
+Group=coentrovpn
+EnvironmentFile=-/etc/coentrovpn/server-helper.env
+ExecStart=/usr/local/bin/coentro_server_helper \
+    --config ${COENTRO_HELPER_CONFIG:-/etc/coentrovpn/server-helper.toml} \
+    --socket-path ${COENTRO_HELPER_SOCKET:-/run/coentrovpn/server_helper.sock}
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=coentrovpn
+RuntimeDirectoryMode=0750
+StateDirectory=coentrovpn
+StateDirectoryMode=0750
+UMask=007
+
+# Least privilege hardening
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectKernelLogs=true
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

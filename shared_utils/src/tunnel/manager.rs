@@ -6,8 +6,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use crate::config::Config as GlobalConfig;
 use crate::transport::Connection as TraitConnection; // Import the trait
@@ -42,6 +44,25 @@ impl TunnelManager {
             client_bootstrapper: ClientBootstrapper::new(),
             server_bootstrapper: ServerBootstrapper::new(),
         }
+    }
+
+    /// Register an already-authenticated server-side connection with the manager.
+    pub fn register_authenticated_server_connection(
+        &self,
+        connection: Box<dyn TraitConnection + Send + Sync>,
+    ) -> TunnelResult<TunnelId> {
+        let peer_addr = connection.peer_addr()?;
+        let tunnel_id = TunnelId::from(format!("server-session-{}", Uuid::new_v4()));
+        info!(tunnel_id = %tunnel_id, peer = %peer_addr, "Registering authenticated server connection");
+
+        let (tx, rx) = mpsc::channel(100);
+        let mut handle = TunnelHandle::new(tunnel_id.clone(), peer_addr, tx, rx);
+        handle.set_connection(connection);
+        handle.set_state(TunnelState::Connected);
+
+        self.add_tunnel(handle)?;
+        info!(tunnel_id = %tunnel_id, peer = %peer_addr, "Server connection registered with tunnel manager");
+        Ok(tunnel_id)
     }
 
     /// Create a new client tunnel.

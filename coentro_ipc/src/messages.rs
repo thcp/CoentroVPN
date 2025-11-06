@@ -35,11 +35,31 @@ pub struct TunnelSetupRequest {
     /// List of routes to add to the routing table
     pub routes_to_add: Vec<String>,
 
+    /// Optional route policy mode (server may ignore if explicit routes provided)
+    #[serde(default)]
+    pub route_mode: Option<RouteMode>,
+
+    /// Optional additional routes to include
+    #[serde(default)]
+    pub include_routes: Option<Vec<String>>,
+
+    /// Optional routes to exclude
+    #[serde(default)]
+    pub exclude_routes: Option<Vec<String>>,
+
     /// Optional list of DNS servers to configure
     pub dns_servers: Option<Vec<String>>,
 
     /// Optional MTU value for the tunnel interface
     pub mtu: Option<u32>,
+}
+
+/// Route policy for default routing
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteMode {
+    Default,
+    Split,
 }
 
 impl TunnelSetupRequest {
@@ -66,15 +86,24 @@ impl TunnelSetupRequest {
             }
         }
 
-        // Validate routes_to_add is not empty
-        if self.routes_to_add.is_empty() {
-            return Err("At least one route must be specified".to_string());
-        }
-
-        // Validate routes_to_add
+        // Validate routes
         for route in &self.routes_to_add {
             if !Self::is_valid_cidr(route) {
                 return Err(format!("Invalid route: {}", route));
+            }
+        }
+        if let Some(list) = &self.include_routes {
+            for route in list {
+                if !Self::is_valid_cidr(route) {
+                    return Err(format!("Invalid include route: {}", route));
+                }
+            }
+        }
+        if let Some(list) = &self.exclude_routes {
+            for route in list {
+                if !Self::is_valid_cidr(route) {
+                    return Err(format!("Invalid exclude route: {}", route));
+                }
             }
         }
 
@@ -235,6 +264,9 @@ mod tests {
             client_id: "test-client".to_string(),
             requested_ip_config: Some("10.0.0.1/24".to_string()),
             routes_to_add: vec!["0.0.0.0/0".to_string()],
+            route_mode: None,
+            include_routes: None,
+            exclude_routes: None,
             dns_servers: Some(vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]),
             mtu: Some(1500),
         });
