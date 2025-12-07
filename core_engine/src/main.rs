@@ -375,10 +375,7 @@ impl RevocationList {
                 path.display()
             )
         })?;
-        for entry in BufReader::new(file)
-            .lines()
-            .map_while(Result::ok)
-        {
+        for entry in BufReader::new(file).lines().map_while(Result::ok) {
             let trimmed = entry.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;

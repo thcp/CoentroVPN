@@ -705,8 +705,8 @@ impl HelperState {
                         );
                     }
                 }
-        let result = entry.attach_transport_with_id(flow_id, fd);
-        match result {
+                let result = entry.attach_transport_with_id(flow_id, fd);
+                match result {
                     Ok(()) => Ok(AttachQuicResponse {
                         session_id: request.session_id,
                         accepted_streams: 1,
@@ -904,11 +904,7 @@ struct TunBridge {
 }
 
 impl TunBridge {
-    fn new(
-        interface: String,
-        tun_fd: OwnedFd,
-        stats: TransportStats,
-    ) -> Result<Self, ActionError> {
+    fn new(interface: String, tun_fd: OwnedFd, stats: TransportStats) -> Result<Self, ActionError> {
         let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(TUN_WRITE_QUEUE_CAPACITY);
         let (broadcast_tx, _) = broadcast::channel::<Arc<Vec<u8>>>(TUN_BROADCAST_CAPACITY);
 
