@@ -375,14 +375,15 @@ impl RevocationList {
                 path.display()
             )
         })?;
-        for line in BufReader::new(file).lines() {
-            if let Ok(entry) = line {
-                let trimmed = entry.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    continue;
-                }
-                set.insert(Self::normalize(trimmed));
+        for entry in BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+        {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
             }
+            set.insert(Self::normalize(trimmed));
         }
         Ok(())
     }
@@ -451,7 +452,7 @@ async fn handle_connection(
                             shared_utils::transport::TransportError::Configuration(e.to_string())
                         })
                 };
-                psk_handshake_server_with_config(&mut *conn, move || get_psk(), &server_auth)
+                psk_handshake_server_with_config(&mut *conn, get_psk, &server_auth)
                     .await
                     .map_err(|e| anyhow!("PSK authentication failed: {e}"))?;
                 info!(?peer, "Client authenticated via PSK");

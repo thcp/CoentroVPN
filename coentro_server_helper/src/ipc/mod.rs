@@ -185,12 +185,12 @@ impl Drop for ServerIpcServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::messages::{DnsConfig, RouteSpec, TunnelAddress};
+    use crate::network::NatState;
     use async_trait::async_trait;
     use std::net::{IpAddr, Ipv4Addr};
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::os::unix::net::UnixStream as StdUnixStream;
-    use crate::ipc::messages::{DnsConfig, RouteSpec, TunnelAddress};
-    use crate::network::NatState;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::{timeout, Duration};
 
@@ -246,11 +246,19 @@ mod tests {
             Ok(PolicyState::default())
         }
 
-        async fn rollback_policy(&self, _interface: &str, _state: &PolicyState) -> InterfaceResult<()> {
+        async fn rollback_policy(
+            &self,
+            _interface: &str,
+            _state: &PolicyState,
+        ) -> InterfaceResult<()> {
             Ok(())
         }
 
-        async fn apply_nat(&self, _interface: &str, _cidr: &str) -> InterfaceResult<Option<NatState>> {
+        async fn apply_nat(
+            &self,
+            _interface: &str,
+            _cidr: &str,
+        ) -> InterfaceResult<Option<NatState>> {
             Ok(None)
         }
 
@@ -295,7 +303,8 @@ mod tests {
             .await
             .expect("attach");
 
-        let mut client_stream = tokio::net::UnixStream::from_std(client_sock).expect("tokio stream");
+        let mut client_stream =
+            tokio::net::UnixStream::from_std(client_sock).expect("tokio stream");
         let tun_peer = iface.take_peer().await.expect("tun peer present");
         let mut tun_stream = tokio::net::UnixStream::from_std(tun_peer).expect("tokio tun");
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -303,8 +312,14 @@ mod tests {
         // Transport -> TUN
         let payload = vec![0xAA, 0xBB, 0xCC];
         let len_bytes = (payload.len() as u16).to_be_bytes();
-        client_stream.write_all(&len_bytes).await.expect("write len");
-        client_stream.write_all(&payload).await.expect("write payload");
+        client_stream
+            .write_all(&len_bytes)
+            .await
+            .expect("write len");
+        client_stream
+            .write_all(&payload)
+            .await
+            .expect("write payload");
 
         let mut tun_buf = vec![0u8; payload.len()];
         timeout(Duration::from_secs(1), tun_stream.read_exact(&mut tun_buf))
@@ -319,21 +334,30 @@ mod tests {
         {
             let sessions = state.sessions.lock().await;
             let entry = sessions.get("sess1").expect("session present");
-            let _ = entry.tun_bridge.broadcast_tx.send(Arc::new(payload2.clone()));
+            let _ = entry
+                .tun_bridge
+                .broadcast_tx
+                .send(Arc::new(payload2.clone()));
         }
 
         let mut len_buf = [0u8; 2];
         tokio::time::sleep(Duration::from_millis(25)).await;
-        timeout(Duration::from_secs(1), client_stream.read_exact(&mut len_buf))
-            .await
-            .expect("client len timeout")
-            .expect("client len read");
+        timeout(
+            Duration::from_secs(1),
+            client_stream.read_exact(&mut len_buf),
+        )
+        .await
+        .expect("client len timeout")
+        .expect("client len read");
         let len = u16::from_be_bytes(len_buf) as usize;
         let mut recv_buf = vec![0u8; len];
-        timeout(Duration::from_secs(1), client_stream.read_exact(&mut recv_buf))
-            .await
-            .expect("client payload timeout")
-            .expect("client payload read");
+        timeout(
+            Duration::from_secs(1),
+            client_stream.read_exact(&mut recv_buf),
+        )
+        .await
+        .expect("client payload timeout")
+        .expect("client payload read");
         assert_eq!(recv_buf, payload2);
     }
 }
@@ -365,18 +389,13 @@ impl TunnelEntry {
             sysctl_touched,
         } = descriptor;
 
-        let bytes_ingress = Arc::new(AtomicU64::new(0));
-        let bytes_egress = Arc::new(AtomicU64::new(0));
-        let packets_ingress = Arc::new(AtomicU64::new(0));
-        let packets_egress = Arc::new(AtomicU64::new(0));
-        let tun_bridge = TunBridge::new(
-            name.clone(),
-            fd,
-            Arc::clone(&bytes_ingress),
-            Arc::clone(&bytes_egress),
-            Arc::clone(&packets_ingress),
-            Arc::clone(&packets_egress),
-        )?;
+        let stats = TransportStats {
+            bytes_in: Arc::new(AtomicU64::new(0)),
+            bytes_out: Arc::new(AtomicU64::new(0)),
+            packets_in: Arc::new(AtomicU64::new(0)),
+            packets_out: Arc::new(AtomicU64::new(0)),
+        };
+        let tun_bridge = TunBridge::new(name.clone(), fd, stats.clone())?;
 
         Ok(Self {
             interface_name: name,
@@ -385,10 +404,10 @@ impl TunnelEntry {
             sysctl_touched,
             tun_bridge,
             flows: HashMap::new(),
-            bytes_ingress,
-            bytes_egress,
-            packets_ingress,
-            packets_egress,
+            bytes_ingress: stats.bytes_in,
+            bytes_egress: stats.bytes_out,
+            packets_ingress: stats.packets_in,
+            packets_egress: stats.packets_out,
             started_at: SystemTime::now(),
             policy_state: PolicyState::default(),
         })
@@ -404,16 +423,13 @@ impl TunnelEntry {
 
         let receiver = self.tun_bridge.subscribe();
         let writer = self.tun_bridge.writer();
-        let bridge = TransportBridge::new(
-            flow_id.clone(),
-            fd,
-            receiver,
-            writer,
-            Arc::clone(&self.bytes_ingress),
-            Arc::clone(&self.bytes_egress),
-            Arc::clone(&self.packets_ingress),
-            Arc::clone(&self.packets_egress),
-        )?;
+        let stats = TransportStats {
+            bytes_in: Arc::clone(&self.bytes_ingress),
+            bytes_out: Arc::clone(&self.bytes_egress),
+            packets_in: Arc::clone(&self.packets_ingress),
+            packets_out: Arc::clone(&self.packets_egress),
+        };
+        let bridge = TransportBridge::new(flow_id.clone(), fd, receiver, writer, stats)?;
         self.flows.insert(flow_id, bridge);
         Ok(())
     }
@@ -538,10 +554,7 @@ impl HelperState {
     async fn shutdown(&self) {
         let drained = {
             let mut sessions = self.sessions.lock().await;
-            let drained = sessions
-                .drain()
-                .map(|(id, entry)| (id, entry))
-                .collect::<Vec<_>>();
+            let drained = sessions.drain().collect::<Vec<_>>();
             gauge!(METRIC_ACTIVE_SESSIONS, 0.0);
             drained
         };
@@ -692,8 +705,8 @@ impl HelperState {
                         );
                     }
                 }
-                let result = entry.attach_transport_with_id(flow_id, fd);
-                match result {
+        let result = entry.attach_transport_with_id(flow_id, fd);
+        match result {
                     Ok(()) => Ok(AttachQuicResponse {
                         session_id: request.session_id,
                         accepted_streams: 1,
@@ -894,10 +907,7 @@ impl TunBridge {
     fn new(
         interface: String,
         tun_fd: OwnedFd,
-        bytes_in: Arc<AtomicU64>,
-        bytes_out: Arc<AtomicU64>,
-        packets_in: Arc<AtomicU64>,
-        packets_out: Arc<AtomicU64>,
+        stats: TransportStats,
     ) -> Result<Self, ActionError> {
         let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(TUN_WRITE_QUEUE_CAPACITY);
         let (broadcast_tx, _) = broadcast::channel::<Arc<Vec<u8>>>(TUN_BROADCAST_CAPACITY);
@@ -911,8 +921,8 @@ impl TunBridge {
 
         let reader_interface = interface.clone();
         let broadcast_reader = broadcast_tx.clone();
-        let bytes_out_reader = Arc::clone(&bytes_out);
-        let packets_out_reader = Arc::clone(&packets_out);
+        let bytes_out_reader = Arc::clone(&stats.bytes_out);
+        let packets_out_reader = Arc::clone(&stats.packets_out);
         let reader_task = tokio::spawn(async move {
             let std_reader = unsafe { StdFile::from_raw_fd(reader_fd.into_raw_fd()) };
             let mut reader = File::from_std(std_reader);
@@ -954,8 +964,8 @@ impl TunBridge {
             }
         });
 
-        let bytes_in_writer = Arc::clone(&bytes_in);
-        let packets_in_writer = Arc::clone(&packets_in);
+        let bytes_in_writer = Arc::clone(&stats.bytes_in);
+        let packets_in_writer = Arc::clone(&stats.packets_in);
         let writer_interface = interface.clone();
         let writer_task = tokio::spawn(async move {
             let std_writer = unsafe { StdFile::from_raw_fd(writer_fd.into_raw_fd()) };
@@ -1028,16 +1038,21 @@ struct TransportBridge {
     writer_task: JoinHandle<()>,
 }
 
+#[derive(Debug, Clone)]
+struct TransportStats {
+    bytes_in: Arc<AtomicU64>,
+    bytes_out: Arc<AtomicU64>,
+    packets_in: Arc<AtomicU64>,
+    packets_out: Arc<AtomicU64>,
+}
+
 impl TransportBridge {
     fn new(
         flow_id: String,
         fd: RawFd,
         mut broadcast_rx: broadcast::Receiver<Arc<Vec<u8>>>,
         tun_writer: mpsc::Sender<Vec<u8>>,
-        bytes_in: Arc<AtomicU64>,
-        bytes_out: Arc<AtomicU64>,
-        packets_in: Arc<AtomicU64>,
-        packets_out: Arc<AtomicU64>,
+        stats: TransportStats,
     ) -> Result<Self, ActionError> {
         let std_stream = unsafe { StdUnixStream::from_raw_fd(fd) };
         std_stream
@@ -1048,8 +1063,8 @@ impl TransportBridge {
 
         let (mut reader, mut writer) = transport.into_split();
 
-        let writer_bytes = Arc::clone(&bytes_out);
-        let writer_packets = Arc::clone(&packets_out);
+        let writer_bytes = Arc::clone(&stats.bytes_out);
+        let writer_packets = Arc::clone(&stats.packets_out);
         let flow_for_writer = flow_id.clone();
         let writer_task = tokio::spawn(async move {
             loop {
@@ -1111,8 +1126,8 @@ impl TransportBridge {
         });
 
         let tun_writer_clone = tun_writer;
-        let reader_bytes = Arc::clone(&bytes_in);
-        let reader_packets = Arc::clone(&packets_in);
+        let reader_bytes = Arc::clone(&stats.bytes_in);
+        let reader_packets = Arc::clone(&stats.packets_in);
         let flow_for_reader = flow_id.clone();
         let reader_task = tokio::spawn(async move {
             loop {

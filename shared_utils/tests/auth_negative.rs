@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use shared_utils::proto::auth::{
-    parse_psk, psk_handshake_client, psk_handshake_server, psk_handshake_server_with_config,
-    ServerAuthConfig,
+    ServerAuthConfig, parse_psk, psk_handshake_client, psk_handshake_server,
+    psk_handshake_server_with_config,
 };
 use shared_utils::transport::{Connection, TransportError};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tracing::warn;
 
@@ -74,7 +74,10 @@ impl Connection for InMemoryConn {
         if self.reorder && payload.len() > 1 {
             payload.reverse();
         }
-        self.tx.send(payload).await.map_err(|e| TransportError::Send(e.to_string()))
+        self.tx
+            .send(payload)
+            .await
+            .map_err(|e| TransportError::Send(e.to_string()))
     }
 
     async fn recv_data(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -148,10 +151,7 @@ async fn rejects_stale_challenge() {
 
     match client_res {
         Err(TransportError::Protocol(msg)) => {
-            assert!(
-                msg.contains("stale"),
-                "unexpected client error: {msg}"
-            );
+            assert!(msg.contains("stale"), "unexpected client error: {msg}");
         }
         other => panic!("expected client stale challenge, got {:?}", other),
     }

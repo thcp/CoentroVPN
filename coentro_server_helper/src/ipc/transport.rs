@@ -17,6 +17,7 @@ pub(crate) fn message_bincode_config() -> impl Options {
 
 /// Send a request over the IPC channel. When the request is `AttachQuic`, the
 /// caller must provide a file descriptor that will be delivered via SCM_RIGHTS.
+#[allow(dead_code)] // Exported for core_engine helper client; unused internally in the helper binary.
 pub async fn send_request(
     stream: &mut UnixStream,
     envelope: &AuthenticatedRequest,
@@ -64,6 +65,7 @@ pub async fn send_response(stream: &mut UnixStream, response: &ServerResponse) -
 }
 
 /// Receive a response payload from the peer.
+#[allow(dead_code)] // Exported for core_engine helper client; unused internally in the helper binary.
 pub async fn receive_response(stream: &mut UnixStream) -> Result<ServerResponse> {
     let payload = read_length_prefixed(stream).await?;
     let response = message_bincode_config().deserialize(&payload)?;
@@ -105,6 +107,7 @@ async fn read_length_prefixed(stream: &mut UnixStream) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+#[allow(dead_code)]
 fn send_fd(stream: &UnixStream, fd: RawFd) -> Result<()> {
     if fd < 0 {
         bail!("Invalid file descriptor: {}", fd);

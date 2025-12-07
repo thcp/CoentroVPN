@@ -11,9 +11,9 @@ mod network_manager;
 mod sleep_monitor;
 
 use clap::Parser;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use shared_utils::config::Config;
 use shared_utils::logging::{init_logging, LogOptions};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::net::SocketAddr;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
@@ -139,9 +139,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Metrics exporter
     let _metrics_handle: Option<PrometheusHandle> = if config.metrics.enabled {
-        let addr: SocketAddr = config.metrics.listen_addr.parse().map_err(|e| {
-            anyhow::anyhow!("invalid metrics listen_addr: {}", e)
-        })?;
+        let addr: SocketAddr = config
+            .metrics
+            .listen_addr
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid metrics listen_addr: {}", e))?;
         info!("Prometheus metrics endpoint listening on {}", addr);
         Some(
             PrometheusBuilder::new()

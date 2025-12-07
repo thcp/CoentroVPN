@@ -177,7 +177,9 @@ fn test_mtls_missing_material_rejected() {
     file.write_all(config_str.as_bytes()).unwrap();
 
     let result = Config::load(file.path());
-    assert!(matches!(result, Err(ConfigError::MissingValue(msg)) if msg.contains("security.cert_path")));
+    assert!(
+        matches!(result, Err(ConfigError::MissingValue(msg)) if msg.contains("security.cert_path"))
+    );
 }
 
 #[test]

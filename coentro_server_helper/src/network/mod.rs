@@ -163,7 +163,7 @@ pub fn build_interface_manager() -> Box<dyn InterfaceManager> {
 
     #[cfg(target_os = "macos")]
     {
-        Box::new(MacOsInterfaceManager::default())
+        Box::new(MacOsInterfaceManager)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

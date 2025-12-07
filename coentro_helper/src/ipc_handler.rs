@@ -55,10 +55,7 @@ const METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL: &str = "coentrovpn_helper_tunnel_tea
 
 fn update_client_metrics(active_clients: &HashMap<u32, ClientState>) {
     gauge!(METRIC_HELPER_ACTIVE_CLIENTS, active_clients.len() as f64);
-    let active_tunnels = active_clients
-        .values()
-        .filter(|c| c.tunnel_active)
-        .count();
+    let active_tunnels = active_clients.values().filter(|c| c.tunnel_active).count();
     gauge!(METRIC_HELPER_ACTIVE_TUNNELS, active_tunnels as f64);
 }
 

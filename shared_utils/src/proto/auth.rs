@@ -284,6 +284,9 @@ pub trait ReplayCacheProvider: std::fmt::Debug + Send + Sync + 'static {
     fn len(&self) -> usize {
         0
     }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Simple in-memory replay cache to detect reused nonces.
@@ -370,9 +373,8 @@ impl PersistentReplayCache {
                     let ts = SystemTime::UNIX_EPOCH + Duration::from_millis(timestamp_ms);
                     let age = now.duration_since(ts).unwrap_or_default();
                     if age <= self.load_ttl {
-                        let entry_instant = Instant::now()
-                            .checked_sub(age)
-                            .unwrap_or_else(|| Instant::now());
+                        let entry_instant =
+                            Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
                         guard.push_back((nonce, entry_instant));
                     }
                 }
@@ -537,7 +539,7 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use tokio::sync::{mpsc, Mutex};
+    use tokio::sync::{Mutex, mpsc};
 
     #[test]
     fn test_hmac_and_challenge() {

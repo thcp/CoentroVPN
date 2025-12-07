@@ -9,13 +9,13 @@ mod tun_handler;
 
 use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
 use clap::{Parser, Subcommand};
+use metrics::{counter, gauge};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use rustls::{Certificate as RustlsCertificate, PrivateKey as RustlsPrivateKey};
 use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use shared_utils::logging::{init_logging, LogOptions};
 use shared_utils::quic::configure_client_tls_with_roots_and_identity;
 use shared_utils::transport::ClientTransport;
-use metrics::{counter, gauge};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
