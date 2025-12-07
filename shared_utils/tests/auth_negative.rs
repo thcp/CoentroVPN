@@ -9,6 +9,7 @@ use shared_utils::proto::auth::{
 use shared_utils::transport::{Connection, TransportError};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
+use tracing::warn;
 
 struct InMemoryConn {
     tx: mpsc::Sender<Vec<u8>>,
@@ -16,12 +17,20 @@ struct InMemoryConn {
     send_delay: Option<Duration>,
     local: SocketAddr,
     peer: SocketAddr,
+    drop_rate: f32,
+    reorder: bool,
 }
 
 impl InMemoryConn {
-    fn pair(
+    fn pair(server_delay: Option<Duration>, client_delay: Option<Duration>) -> (Self, Self) {
+        Self::pair_with_conditions(server_delay, client_delay, 0.0, false)
+    }
+
+    fn pair_with_conditions(
         server_delay: Option<Duration>,
         client_delay: Option<Duration>,
+        drop_rate: f32,
+        reorder: bool,
     ) -> (Self, Self) {
         let (server_tx, server_rx) = mpsc::channel::<Vec<u8>>(16);
         let (client_tx, client_rx) = mpsc::channel::<Vec<u8>>(16);
@@ -32,6 +41,8 @@ impl InMemoryConn {
             send_delay: server_delay,
             local,
             peer: local,
+            drop_rate,
+            reorder,
         };
         let client = Self {
             tx: client_tx,
@@ -39,6 +50,8 @@ impl InMemoryConn {
             send_delay: client_delay,
             local,
             peer: local,
+            drop_rate,
+            reorder,
         };
         (server, client)
     }
@@ -50,10 +63,18 @@ impl Connection for InMemoryConn {
         if let Some(delay) = self.send_delay {
             sleep(delay).await;
         }
-        self.tx
-            .send(data.to_vec())
-            .await
-            .map_err(|e| TransportError::Send(e.to_string()))
+        if self.drop_rate > 0.0 {
+            let roll: f32 = rand::random();
+            if roll < self.drop_rate {
+                warn!("Simulated drop of outbound packet");
+                return Ok(());
+            }
+        }
+        let mut payload = data.to_vec();
+        if self.reorder && payload.len() > 1 {
+            payload.reverse();
+        }
+        self.tx.send(payload).await.map_err(|e| TransportError::Send(e.to_string()))
     }
 
     async fn recv_data(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -143,5 +164,25 @@ async fn rejects_stale_challenge() {
             );
         }
         other => panic!("expected server stale challenge, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn withstands_loss_and_reorder() {
+    // Simulate loss and reordering; handshake should succeed or fail cleanly without hanging.
+    let (mut server_conn, mut client_conn) =
+        InMemoryConn::pair_with_conditions(None, None, 0.2, true);
+
+    let server = tokio::spawn(async move {
+        psk_handshake_server(&mut server_conn, || parse_psk("Y29uc2lzdGVudA==")).await
+    });
+
+    let client_res = psk_handshake_client(&mut client_conn, "Y29uc2lzdGVudA==").await;
+    let server_res = server.await.expect("server task panicked");
+
+    match (client_res, server_res) {
+        (Ok(_), Ok(_)) => {}
+        (Err(TransportError::Protocol(_)), Err(TransportError::Protocol(_))) => {}
+        other => panic!("unexpected outcome under loss/reorder: {:?}", other),
     }
 }

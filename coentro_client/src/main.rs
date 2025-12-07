@@ -357,13 +357,8 @@ async fn main() -> anyhow::Result<()> {
                 let processor = Arc::new(PassThroughProcessor);
 
                 // Start the TUN-to-transport bridge over QUIC
-                let tunnel_task = tokio::spawn(async move {
-                    if let Err(e) =
-                        start_tun_transport_bridge(tun_handler, connection, processor, 100).await
-                    {
-                        error!("Tunnel error: {}", e);
-                    }
-                });
+                let bridge =
+                    start_tun_transport_bridge(tun_handler, connection, processor, 100).await?;
                 counter!(
                     "coentrovpn_client_tunnel_setups_total",
                     1,
@@ -380,8 +375,7 @@ async fn main() -> anyhow::Result<()> {
                     info!("--no-wait specified; tearing down tunnel immediately...");
                 }
 
-                // Abort the tunnel task
-                tunnel_task.abort();
+                bridge.shutdown().await;
 
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {

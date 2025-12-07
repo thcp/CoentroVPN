@@ -9,7 +9,8 @@ use std::io::{self, Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 /// Maximum packet size for TUN interface
@@ -316,46 +317,60 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
     connection: Box<dyn TransportConnection + Send + Sync>,
     processor: Arc<P>,
     buffer_size: usize,
-) -> io::Result<()> {
+) -> io::Result<BridgeHandle> {
     // Create packet channels
     let (quic_to_tun_tx, mut tun_to_quic_rx) = tun_handler.create_packet_channels(buffer_size);
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     // Start TUN processing
+    let mut tun_shutdown = shutdown_tx.subscribe();
     let tun_task = tokio::spawn(async move {
         if let Err(e) = tun_handler.start_processing().await {
             error!("TUN processing error: {}", e);
         }
+        let _ = tun_shutdown.recv().await;
     });
 
     // Task: read from transport and forward to TUN
     let processor_clone = Arc::clone(&processor);
     let connection_arc = Arc::new(Mutex::new(connection));
     let conn_reader = Arc::clone(&connection_arc);
+    let mut read_shutdown = shutdown_tx.subscribe();
     let read_task = tokio::spawn(async move {
         loop {
-            let mut conn = conn_reader.lock().await;
-            match conn.recv_data().await {
-                Ok(Some(data)) => {
-                    debug!("Transport->TUN received {} bytes", data.len());
-                    match processor_clone.process_quic_to_tun(&data).await {
-                        Ok(pkt) => {
-                            if let Err(e) = quic_to_tun_tx.send(pkt).await {
-                                error!("Failed to send packet to TUN: {}", e);
-                                break;
+            tokio::select! {
+                _ = read_shutdown.recv() => {
+                    info!("Transport->TUN reader received shutdown");
+                    break;
+                }
+                result = async {
+                    let mut conn = conn_reader.lock().await;
+                    conn.recv_data().await
+                } => {
+                    match result {
+                        Ok(Some(data)) => {
+                            debug!("Transport->TUN received {} bytes", data.len());
+                            match processor_clone.process_quic_to_tun(&data).await {
+                                Ok(pkt) => {
+                                    if let Err(e) = quic_to_tun_tx.send(pkt).await {
+                                        error!("Failed to send packet to TUN: {}", e);
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Error processing transport->TUN packet: {}", e);
+                                }
                             }
                         }
+                        Ok(None) => {
+                            info!("Transport closed by peer");
+                            break;
+                        }
                         Err(e) => {
-                            error!("Error processing transport->TUN packet: {}", e);
+                            error!("Transport recv error: {}", e);
+                            break;
                         }
                     }
-                }
-                Ok(None) => {
-                    info!("Transport closed by peer");
-                    break;
-                }
-                Err(e) => {
-                    error!("Transport recv error: {}", e);
-                    break;
                 }
             }
         }
@@ -363,29 +378,55 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
 
     // Task: read from TUN and send to transport
     let conn_writer = Arc::clone(&connection_arc);
+    let mut write_shutdown = shutdown_tx.subscribe();
     let write_task = tokio::spawn(async move {
-        while let Some(packet) = tun_to_quic_rx.recv().await {
-            debug!("TUN->Transport sending {} bytes", packet.len());
-            match processor.process_tun_to_quic(&packet).await {
-                Ok(pkt) => {
-                    let mut conn = conn_writer.lock().await;
-                    if let Err(e) = conn.send_data(&pkt).await {
-                        error!("Transport send error: {}", e);
-                        break;
-                    }
+        loop {
+            tokio::select! {
+                _ = write_shutdown.recv() => {
+                    info!("TUN->Transport writer received shutdown");
+                    break;
                 }
-                Err(e) => {
-                    error!("Error processing TUN->transport packet: {}", e);
+                maybe_packet = tun_to_quic_rx.recv() => {
+                    let Some(packet) = maybe_packet else { break; };
+                    debug!("TUN->Transport sending {} bytes", packet.len());
+                    match processor.process_tun_to_quic(&packet).await {
+                        Ok(pkt) => {
+                            let mut conn = conn_writer.lock().await;
+                            if let Err(e) = conn.send_data(&pkt).await {
+                                error!("Transport send error: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error processing TUN->transport packet: {}", e);
+                        }
+                    }
                 }
             }
         }
     });
 
-    tokio::select! {
-        _ = tun_task => warn!("TUN task completed"),
-        _ = read_task => warn!("Transport read task completed"),
-        _ = write_task => warn!("Transport write task completed"),
-    }
+    Ok(BridgeHandle {
+        shutdown: shutdown_tx,
+        tun_task,
+        read_task,
+        write_task,
+    })
+}
 
-    Ok(())
+/// Handle to cooperatively shut down the TUN<->transport bridge.
+pub struct BridgeHandle {
+    shutdown: broadcast::Sender<()>,
+    tun_task: JoinHandle<()>,
+    read_task: JoinHandle<()>,
+    write_task: JoinHandle<()>,
+}
+
+impl BridgeHandle {
+    pub async fn shutdown(self) {
+        let _ = self.shutdown.send(());
+        let _ = self.tun_task.await;
+        let _ = self.read_task.await;
+        let _ = self.write_task.await;
+    }
 }
