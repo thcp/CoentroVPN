@@ -154,32 +154,7 @@ impl QuicClient {
         let client_tls_config =
             configure_client_tls().map_err(|e| TransportError::Configuration(e.to_string()))?;
 
-        let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| {
-            TransportError::Configuration(format!("Failed to initialize cipher: {}", e))
-        })?);
-
-        let mut client_config = ClientConfig::new(client_tls_config);
-        let mut transport_config = quinn::TransportConfig::default();
-
-        let idle_timeout = std::time::Duration::from_secs(30).try_into().map_err(|_| {
-            TransportError::Configuration("Invalid timeout duration for QUIC".into())
-        })?;
-        transport_config.max_idle_timeout(Some(idle_timeout));
-        transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-
-        client_config.transport_config(Arc::new(transport_config));
-
-        let endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()) // Binds to any available local port
-            .map_err(|e| {
-                TransportError::Configuration(format!("Failed to create QUIC endpoint: {}", e))
-            })?;
-        // Note: `set_default_client_config` is not needed if we pass config to `connect_with`
-
-        Ok(Self {
-            endpoint,
-            cipher,
-            client_config,
-        })
+        Self::from_tls_config(key, client_tls_config)
     }
 
     /// Create a new QUIC client with pinned CA roots for TLS validation.
@@ -192,6 +167,14 @@ impl QuicClient {
         let client_tls_config = configure_client_tls_with_roots(roots)
             .map_err(|e| TransportError::Configuration(e.to_string()))?;
 
+        Self::from_tls_config(key, client_tls_config)
+    }
+
+    /// Create a new QUIC client using a fully configured TLS client (supports mTLS).
+    pub fn from_tls_config(
+        key: &[u8],
+        client_tls_config: Arc<rustls::ClientConfig>,
+    ) -> Result<Self, TransportError> {
         let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| {
             TransportError::Configuration(format!("Failed to initialize cipher: {}", e))
         })?);

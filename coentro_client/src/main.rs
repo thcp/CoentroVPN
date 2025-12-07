@@ -9,9 +9,17 @@ mod tun_handler;
 
 use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
 use clap::{Parser, Subcommand};
+use metrics::{counter, gauge};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use rustls::{Certificate as RustlsCertificate, PrivateKey as RustlsPrivateKey};
+use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use shared_utils::logging::{init_logging, LogOptions};
+use shared_utils::quic::configure_client_tls_with_roots_and_identity;
 use shared_utils::transport::ClientTransport;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::BufReader;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -32,6 +40,14 @@ struct Args {
     #[clap(long)]
     ping_helper: bool,
 
+    /// Enable Prometheus metrics exporter (disabled by default)
+    #[clap(long)]
+    metrics_enabled: bool,
+
+    /// Prometheus listen address (only used when metrics_enabled=true)
+    #[clap(long, default_value = "127.0.0.1:9201")]
+    metrics_listen: String,
+
     /// Subcommand to execute
     #[clap(subcommand)]
     command: Option<Command>,
@@ -39,6 +55,7 @@ struct Args {
 
 /// Subcommands for the client
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Set up a VPN tunnel
     #[clap(name = "setup-tunnel")]
@@ -63,6 +80,10 @@ enum Command {
         #[clap(long)]
         server: Option<String>,
 
+        /// Pre-shared key for PSK authentication (hex or base64)
+        #[clap(long)]
+        psk: Option<String>,
+
         /// Client certificate file path
         #[clap(long)]
         cert: Option<PathBuf>,
@@ -74,6 +95,26 @@ enum Command {
         /// Server CA certificate file path
         #[clap(long)]
         ca: Option<PathBuf>,
+
+        /// Do not wait for Ctrl+C; tear down immediately after setup
+        #[clap(long)]
+        no_wait: bool,
+
+        /// Use split-default routing (0.0.0.0/1 and 128.0.0.0/1)
+        #[clap(long)]
+        split_default: bool,
+
+        /// Explicit route mode: "default" or "split" (overrides split-default flag)
+        #[clap(long)]
+        route_mode: Option<String>,
+
+        /// Additional include routes (comma-separated CIDRs)
+        #[clap(long, value_delimiter = ',')]
+        include_routes: Option<Vec<String>>,
+
+        /// Routes to exclude (comma-separated CIDRs)
+        #[clap(long, value_delimiter = ',')]
+        exclude_routes: Option<Vec<String>>,
     },
 
     /// Tear down an active VPN tunnel
@@ -99,6 +140,23 @@ async fn main() -> anyhow::Result<()> {
         level,
         ..Default::default()
     });
+
+    // Start Prometheus exporter if enabled
+    let _metrics_handle: Option<PrometheusHandle> = if args.metrics_enabled {
+        let listen_addr: SocketAddr = args
+            .metrics_listen
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid metrics listen address: {e}"))?;
+        info!("Prometheus metrics endpoint listening on {}", listen_addr);
+        Some(
+            PrometheusBuilder::new()
+                .with_http_listener(listen_addr)
+                .install_recorder()
+                .map_err(|e| anyhow::anyhow!("failed to install Prometheus exporter: {e}"))?,
+        )
+    } else {
+        None
+    };
 
     info!("CoentroVPN Client starting up");
     debug!("Helper socket path: {}", args.helper_socket.display());
@@ -135,23 +193,59 @@ async fn main() -> anyhow::Result<()> {
             dns,
             mtu,
             server,
+            psk,
             cert,
             key,
             ca,
+            no_wait,
+            split_default,
+            route_mode,
+            include_routes,
+            exclude_routes,
         }) => {
-            // Ignoring cert, key, ca as they're not used in this implementation
-            let _ = (cert, key, ca);
+            // Note: cert/key handled via QUIC pinned roots when provided (ca used below)
             info!("Setting up VPN tunnel...");
 
             // Generate a unique client ID
             let client_id = Uuid::new_v4().to_string();
 
-            // Default routes if none specified
-            let routes = routes.unwrap_or_else(|| vec!["0.0.0.0/0".to_string()]);
+            // Determine route mode and explicit routes
+            // If user provided --routes, send them explicitly and leave route_mode None
+            // Otherwise set route_mode so helper computes default/split, and leave routes empty
+            let (routes, route_mode_opt) = if let Some(r) = routes {
+                (r, None)
+            } else {
+                let rm = match route_mode.as_deref() {
+                    Some("split") => Some(coentro_ipc::messages::RouteMode::Split),
+                    Some("default") => Some(coentro_ipc::messages::RouteMode::Default),
+                    Some(_) => {
+                        return Err(anyhow::anyhow!(
+                            "Invalid --route-mode. Use 'default' or 'split'"
+                        ));
+                    }
+                    None => {
+                        if split_default {
+                            Some(coentro_ipc::messages::RouteMode::Split)
+                        } else {
+                            Some(coentro_ipc::messages::RouteMode::Default)
+                        }
+                    }
+                };
+                (Vec::new(), rm)
+            };
 
             // Set up the tunnel
             let tunnel_details = match helper_client
-                .setup_tunnel(&client_id, ip, routes, dns, mtu)
+                .setup_tunnel(
+                    &client_id,
+                    ip,
+                    routes,
+                    route_mode_opt,
+                    include_routes,
+                    exclude_routes,
+                    dns,
+                    mtu,
+                )
                 .await
             {
                 Ok(details) => {
@@ -172,22 +266,78 @@ async fn main() -> anyhow::Result<()> {
                 info!("Connecting to QUIC server at {}", server_addr);
 
                 // Initialize QUIC client (secure-by-default TLS, encryption key for payload)
-                let key = shared_utils::AesGcmCipher::generate_key();
-                let quic_client = match shared_utils::QuicClient::new(&key) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to initialize QUIC client: {}", e);
-                        return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
+                // Derive data-plane key from PSK if provided; else generate a random key for local testing
+                let data_key: [u8; 32] = if let Some(psk_str_clone) = psk.clone() {
+                    let psk_bytes = match shared_utils::proto::auth::parse_psk(&psk_str_clone) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            error!("Invalid PSK: {}", e);
+                            return Err(anyhow::anyhow!("Invalid PSK: {}", e));
+                        }
+                    };
+                    use sha2::{Digest, Sha256};
+                    let digest = Sha256::digest(&psk_bytes);
+                    let mut out = [0u8; 32];
+                    out.copy_from_slice(&digest);
+                    out
+                } else {
+                    shared_utils::AesGcmCipher::generate_key()
+                };
+                let pinned_roots = if let Some(ca_path) = ca.as_ref() {
+                    Some(load_certificate_chain(ca_path)?)
+                } else {
+                    None
+                };
+                let client_identity = match (cert.as_ref(), key.as_ref()) {
+                    (Some(cert_path), Some(key_path)) => {
+                        Some(load_client_identity(cert_path, key_path)?)
+                    }
+                    (None, None) => None,
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "--cert and --key must be provided together for mTLS"
+                        ))
                     }
                 };
 
-                let connection = match quic_client.connect(&server_addr).await {
+                let tls_config = configure_client_tls_with_roots_and_identity(
+                    pinned_roots,
+                    client_identity,
+                    true,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to build TLS config: {e}"))?;
+
+                let quic_client = shared_utils::QuicClient::from_tls_config(&data_key, tls_config)
+                    .map_err(|e| anyhow::anyhow!("Failed to initialize QUIC client: {e}"))?;
+
+                let mut connection = match quic_client.connect(&server_addr).await {
                     Ok(conn) => conn,
                     Err(e) => {
                         error!("Failed to connect to QUIC server {}: {}", server_addr, e);
                         return Err(anyhow::anyhow!("Failed to connect to QUIC server: {}", e));
                     }
                 };
+
+                // Perform control-plane authentication (PSK if provided)
+                if let Some(psk_str) = psk {
+                    info!("Performing PSK authentication with server");
+                    match shared_utils::proto::auth::psk_handshake_client(
+                        &mut *connection,
+                        &psk_str,
+                    )
+                    .await
+                    {
+                        Ok(session_id) => {
+                            info!("Authenticated. Session: {}", session_id);
+                        }
+                        Err(e) => {
+                            error!("Authentication failed: {}", e);
+                            return Err(anyhow::anyhow!("Authentication failed: {}", e));
+                        }
+                    }
+                } else {
+                    info!("No PSK provided; proceeding without client auth (server may reject)");
+                }
 
                 info!("QUIC connection established, starting tunnel...");
 
@@ -207,46 +357,69 @@ async fn main() -> anyhow::Result<()> {
                 let processor = Arc::new(PassThroughProcessor);
 
                 // Start the TUN-to-transport bridge over QUIC
-                let tunnel_task = tokio::spawn(async move {
-                    if let Err(e) =
-                        start_tun_transport_bridge(tun_handler, connection, processor, 100).await
-                    {
-                        error!("Tunnel error: {}", e);
-                    }
-                });
+                let bridge =
+                    start_tun_transport_bridge(tun_handler, connection, processor, 100).await?;
+                counter!(
+                    "coentrovpn_client_tunnel_setups_total",
+                    1,
+                    "status" => "success"
+                );
+                gauge!("coentrovpn_client_active_tunnels", 1.0);
 
-                info!("Tunnel is active. Press Ctrl+C to tear down the tunnel and exit.");
+                if !no_wait {
+                    info!("Tunnel is active. Press Ctrl+C to tear down the tunnel and exit.");
+                    // Wait for Ctrl+C
+                    tokio::signal::ctrl_c().await?;
+                    info!("Received Ctrl+C, tearing down tunnel...");
+                } else {
+                    info!("--no-wait specified; tearing down tunnel immediately...");
+                }
 
-                // Wait for Ctrl+C
-                tokio::signal::ctrl_c().await?;
-
-                info!("Received Ctrl+C, tearing down tunnel...");
-
-                // Abort the tunnel task
-                tunnel_task.abort();
+                bridge.shutdown().await;
 
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
                     error!("Failed to tear down tunnel: {}", e);
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "error"
+                    );
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
-
+                counter!(
+                    "coentrovpn_client_tunnel_teardowns_total",
+                    1,
+                    "status" => "success"
+                );
+                gauge!("coentrovpn_client_active_tunnels", 0.0);
                 info!("Tunnel torn down successfully.");
             } else {
-                info!("No server address provided, tunnel is ready for local testing.");
-                info!("Press Ctrl+C to tear down the tunnel and exit.");
-
-                // Wait for Ctrl+C
-                tokio::signal::ctrl_c().await?;
-
-                info!("Received Ctrl+C, tearing down tunnel...");
+                if !no_wait {
+                    info!("No server address provided; tunnel is ready for local testing.");
+                    info!("Press Ctrl+C to tear down the tunnel and exit.");
+                    tokio::signal::ctrl_c().await?;
+                    info!("Received Ctrl+C, tearing down tunnel...");
+                } else {
+                    info!("--no-wait specified; tearing down tunnel immediately...");
+                }
 
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
                     error!("Failed to tear down tunnel: {}", e);
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "error"
+                    );
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
-
+                counter!(
+                    "coentrovpn_client_tunnel_teardowns_total",
+                    1,
+                    "status" => "success"
+                );
+                gauge!("coentrovpn_client_active_tunnels", 0.0);
                 info!("Tunnel torn down successfully.");
             }
         }
@@ -255,10 +428,21 @@ async fn main() -> anyhow::Result<()> {
 
             match helper_client.teardown_tunnel().await {
                 Ok(()) => {
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "success"
+                    );
+                    gauge!("coentrovpn_client_active_tunnels", 0.0);
                     info!("Tunnel torn down successfully.");
                 }
                 Err(e) => {
                     error!("Failed to tear down tunnel: {}", e);
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "error"
+                    );
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
             }
@@ -288,4 +472,55 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_certificate_chain(path: &Path) -> anyhow::Result<Vec<RustlsCertificate>> {
+    let file = File::open(path).map_err(|e| {
+        anyhow::anyhow!("Failed to open certificate file {}: {}", path.display(), e)
+    })?;
+    let mut reader = BufReader::new(file);
+    let entries = certs(&mut reader).map_err(|e| {
+        anyhow::anyhow!("Failed to parse certificate PEM {}: {}", path.display(), e)
+    })?;
+    if entries.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No certificates found in {}",
+            path.display()
+        ));
+    }
+    Ok(entries.into_iter().map(RustlsCertificate).collect())
+}
+
+fn load_client_identity(
+    cert_path: &Path,
+    key_path: &Path,
+) -> anyhow::Result<(Vec<RustlsCertificate>, RustlsPrivateKey)> {
+    let chain = load_certificate_chain(cert_path)?;
+    let key = load_private_key(key_path)?;
+    Ok((chain, key))
+}
+
+fn load_private_key(path: &Path) -> anyhow::Result<RustlsPrivateKey> {
+    let file = File::open(path)
+        .map_err(|e| anyhow::anyhow!("Failed to open private key {}: {}", path.display(), e))?;
+    let mut reader = BufReader::new(file);
+    let mut keys = pkcs8_private_keys(&mut reader)
+        .map_err(|e| anyhow::anyhow!("Failed to parse PKCS8 key {}: {}", path.display(), e))?;
+    if let Some(key) = keys.pop() {
+        return Ok(RustlsPrivateKey(key));
+    }
+
+    let file = File::open(path)
+        .map_err(|e| anyhow::anyhow!("Failed to open private key {}: {}", path.display(), e))?;
+    let mut reader = BufReader::new(file);
+    let mut rsa_keys = rsa_private_keys(&mut reader)
+        .map_err(|e| anyhow::anyhow!("Failed to parse RSA key {}: {}", path.display(), e))?;
+    if let Some(key) = rsa_keys.pop() {
+        return Ok(RustlsPrivateKey(key));
+    }
+
+    Err(anyhow::anyhow!(
+        "No usable private keys found in {}",
+        path.display()
+    ))
 }

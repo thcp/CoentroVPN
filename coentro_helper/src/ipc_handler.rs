@@ -9,6 +9,7 @@ use coentro_ipc::messages::{
 };
 use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
 use governor::{Quota, RateLimiter};
+use metrics::{counter, gauge};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::os::unix::io::RawFd;
@@ -24,20 +25,18 @@ use tracing::{debug, error, info, warn};
 fn get_group_id(group_name: &str) -> Option<u32> {
     #[cfg(unix)]
     {
-        // Try to get the group entry
         unsafe {
-            let group_entry = libc::getgrnam(std::ffi::CString::new(group_name).ok()?.as_ptr());
+            let cstr = std::ffi::CString::new(group_name).ok()?;
+            let group_entry = libc::getgrnam(cstr.as_ptr());
             if group_entry.is_null() {
                 return None;
             }
             Some((*group_entry).gr_gid)
         }
     }
-
     #[cfg(not(unix))]
     {
-        // On non-Unix platforms, just return None
-        let _ = group_name; // Suppress unused variable warning
+        let _ = group_name;
         None
     }
 }
@@ -47,6 +46,18 @@ const RATE_LIMIT_REQUESTS: u32 = 30; // Maximum number of requests per client
 const RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds
 const GLOBAL_RATE_LIMIT_CONNECTIONS: u32 = 10; // Maximum number of new connections per minute
 const GLOBAL_RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds for global rate limit
+
+const METRIC_HELPER_ACTIVE_CLIENTS: &str = "coentrovpn_helper_active_clients";
+const METRIC_HELPER_ACTIVE_TUNNELS: &str = "coentrovpn_helper_active_tunnels";
+const METRIC_HELPER_CONNECTIONS_TOTAL: &str = "coentrovpn_helper_connections_total";
+const METRIC_HELPER_TUNNEL_SETUPS_TOTAL: &str = "coentrovpn_helper_tunnel_setups_total";
+const METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL: &str = "coentrovpn_helper_tunnel_teardowns_total";
+
+fn update_client_metrics(active_clients: &HashMap<u32, ClientState>) {
+    gauge!(METRIC_HELPER_ACTIVE_CLIENTS, active_clients.len() as f64);
+    let active_tunnels = active_clients.values().filter(|c| c.tunnel_active).count();
+    gauge!(METRIC_HELPER_ACTIVE_TUNNELS, active_tunnels as f64);
+}
 
 /// IPC Handler for the helper daemon
 pub struct IpcHandler {
@@ -78,6 +89,8 @@ struct ClientState {
     current_ip_config: Option<String>,
     /// File descriptor for the TUN device, if any
     tun_fd: Option<i32>,
+    /// Routes applied for this client (for explicit cleanup on teardown)
+    applied_routes: Vec<String>,
     /// Rate limiter for this client
     #[allow(dead_code)] // Clone trait requires this, but we use Arc internally
     rate_limiter: Arc<
@@ -216,6 +229,39 @@ impl IpcHandler {
             version: env!("CARGO_PKG_VERSION").to_string(),
             global_rate_limiter,
         }
+    }
+
+    /// Compute the final set of routes to apply based on the incoming setup request.
+    /// If `routes_to_add` is non-empty, they are used as-is.
+    /// Otherwise, the base is chosen by `route_mode` (default or split) and then
+    /// `include_routes` are appended (unique) and `exclude_routes` removed.
+    pub(crate) fn compute_final_routes(setup: &TunnelSetupRequest) -> Vec<String> {
+        let mut routes = if !setup.routes_to_add.is_empty() {
+            setup.routes_to_add.clone()
+        } else {
+            match setup
+                .route_mode
+                .unwrap_or(coentro_ipc::messages::RouteMode::Default)
+            {
+                coentro_ipc::messages::RouteMode::Default => vec!["0.0.0.0/0".to_string()],
+                coentro_ipc::messages::RouteMode::Split => {
+                    vec!["0.0.0.0/1".to_string(), "128.0.0.0/1".to_string()]
+                }
+            }
+        };
+
+        if let Some(extra) = &setup.include_routes {
+            for r in extra {
+                if !routes.contains(r) {
+                    routes.push(r.clone());
+                }
+            }
+        }
+        if let Some(ex) = &setup.exclude_routes {
+            routes.retain(|r| !ex.contains(r));
+        }
+
+        routes
     }
 
     /// Run the IPC handler
@@ -407,6 +453,7 @@ impl IpcHandler {
                                 active_interface: None,
                                 current_ip_config: None,
                                 tun_fd: None,
+                                applied_routes: Vec::new(),
                                 rate_limiter,
                             };
 
@@ -425,7 +472,9 @@ impl IpcHandler {
                                         );
                                     }
                                 }
+                                update_client_metrics(&active_clients);
                             }
+                            counter!(METRIC_HELPER_CONNECTIONS_TOTAL, 1, "event" => "accepted");
 
                             // Clone necessary data for the client task
                             let active_clients = Arc::clone(&self.active_clients);
@@ -495,6 +544,7 @@ impl IpcHandler {
                     {
                         let mut active_clients = self.active_clients.lock().unwrap();
                         active_clients.remove(&client_id);
+                        update_client_metrics(&active_clients);
                     }
 
                     // Remove the client task handle
@@ -656,6 +706,7 @@ impl IpcHandler {
                     active_interface: None,
                     current_ip_config: None,
                     tun_fd: None,
+                    applied_routes: Vec::new(),
                     rate_limiter,
                 };
 
@@ -663,7 +714,9 @@ impl IpcHandler {
                             {
                                 let mut active_clients = self.active_clients.lock().unwrap();
                                 active_clients.insert(client_id, client_state);
+                                update_client_metrics(&active_clients);
                             }
+                            counter!(METRIC_HELPER_CONNECTIONS_TOTAL, 1, "event" => "accepted");
 
                             // Clone necessary data for the client task
                             let active_clients = Arc::clone(&self.active_clients);
@@ -733,6 +786,7 @@ impl IpcHandler {
                     {
                         let mut active_clients = self.active_clients.lock().unwrap();
                         active_clients.remove(&client_id);
+                        update_client_metrics(&active_clients);
                     }
 
                     // Remove the client task handle
@@ -792,11 +846,13 @@ impl IpcHandler {
         let network_manager = create_network_manager();
 
         // Create a TUN configuration
+        let requested_ip = setup
+            .requested_ip_config
+            .clone()
+            .unwrap_or_else(|| "10.0.0.1/24".to_string());
         let tun_config = TunConfig {
             name: Some(format!("tun{}", client_id % 10)), // Use client_id to generate a unique name
-            ip_config: setup
-                .requested_ip_config
-                .unwrap_or_else(|| "10.0.0.1/24".to_string()),
+            ip_config: requested_ip,
             mtu: setup.mtu.unwrap_or(1500),
         };
 
@@ -806,8 +862,9 @@ impl IpcHandler {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create TUN interface: {}", e))?;
 
-        // Add routes if specified
-        for route in &setup.routes_to_add {
+        // Build route set
+        let final_routes = Self::compute_final_routes(&setup);
+        for route in &final_routes {
             network_manager
                 .add_route(route, None, &tun_details.name)
                 .await
@@ -830,7 +887,9 @@ impl IpcHandler {
                 state.active_interface = Some(tun_details.name.clone());
                 state.current_ip_config = Some(tun_details.ip_config.clone());
                 state.tun_fd = Some(tun_details.fd);
+                state.applied_routes = final_routes;
             }
+            update_client_metrics(&active_clients);
         }
 
         // Return the tunnel details with the real file descriptor
@@ -873,6 +932,18 @@ impl IpcHandler {
         // Create a network manager
         let network_manager = create_network_manager();
 
+        // Remove previously applied routes (if any)
+        if let Some(state) = {
+            let active = active_clients.lock().unwrap();
+            active.get(&client_id).cloned()
+        } {
+            if let Some(iface) = &state.active_interface {
+                for route in state.applied_routes.iter() {
+                    let _ = network_manager.remove_route(route, None, iface).await;
+                }
+            }
+        }
+
         // Restore DNS configuration
         network_manager
             .restore_dns()
@@ -906,6 +977,7 @@ impl IpcHandler {
                 state.current_ip_config = None;
                 state.tun_fd = None;
             }
+            update_client_metrics(&active_clients);
         }
 
         Ok(())
@@ -1061,11 +1133,13 @@ impl IpcHandler {
                                 "Tunnel setup successful for client ID={}: {:?}",
                                 client_id, details
                             );
+                            counter!(METRIC_HELPER_TUNNEL_SETUPS_TOTAL, 1, "status" => "success");
                             HelperResponse::TunnelReady(details)
                         }
                         Err(e) => {
                             // Log the detailed error for debugging
                             error!("Failed to set up tunnel for client ID={}: {}", client_id, e);
+                            counter!(METRIC_HELPER_TUNNEL_SETUPS_TOTAL, 1, "status" => "error");
 
                             // Send a sanitized error message to the client
                             let sanitized_error = Self::sanitize_error_message(&e.to_string());
@@ -1081,6 +1155,7 @@ impl IpcHandler {
                     match IpcHandler::teardown_tunnel(client_id, active_clients.clone()).await {
                         Ok(()) => {
                             debug!("Tunnel teardown successful for client ID={}", client_id);
+                            counter!(METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL, 1, "status" => "success");
                             HelperResponse::Success
                         }
                         Err(e) => {
@@ -1089,6 +1164,7 @@ impl IpcHandler {
                                 "Failed to tear down tunnel for client ID={}: {}",
                                 client_id, e
                             );
+                            counter!(METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL, 1, "status" => "error");
 
                             // Send a sanitized error message to the client
                             let sanitized_error = Self::sanitize_error_message(&e.to_string());
@@ -1107,5 +1183,70 @@ impl IpcHandler {
                 return Err(anyhow::anyhow!("Failed to send response: {}", e));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coentro_ipc::messages::{RouteMode, TunnelSetupRequest};
+
+    fn mk_req(
+        explicit: &[&str],
+        mode: Option<RouteMode>,
+        inc: Option<&[&str]>,
+        exc: Option<&[&str]>,
+    ) -> TunnelSetupRequest {
+        TunnelSetupRequest {
+            client_id: "t".into(),
+            requested_ip_config: None,
+            routes_to_add: explicit.iter().map(|s| s.to_string()).collect(),
+            route_mode: mode,
+            include_routes: inc.map(|v| v.iter().map(|s| s.to_string()).collect()),
+            exclude_routes: exc.map(|v| v.iter().map(|s| s.to_string()).collect()),
+            dns_servers: None,
+            mtu: None,
+        }
+    }
+
+    #[test]
+    fn routes_default_mode() {
+        let req = mk_req(&[], Some(RouteMode::Default), None, None);
+        let r = IpcHandler::compute_final_routes(&req);
+        assert_eq!(r, vec!["0.0.0.0/0".to_string()]);
+    }
+
+    #[test]
+    fn routes_split_mode() {
+        let req = mk_req(&[], Some(RouteMode::Split), None, None);
+        let r = IpcHandler::compute_final_routes(&req);
+        assert_eq!(r, vec!["0.0.0.0/1".to_string(), "128.0.0.0/1".to_string()]);
+    }
+
+    #[test]
+    fn routes_include_exclude() {
+        let req = mk_req(
+            &[],
+            Some(RouteMode::Default),
+            Some(&["10.0.0.0/8", "192.168.1.0/24"]),
+            Some(&["10.0.0.0/8"]),
+        );
+        let r = IpcHandler::compute_final_routes(&req);
+        assert_eq!(
+            r,
+            vec!["0.0.0.0/0".to_string(), "192.168.1.0/24".to_string()]
+        );
+    }
+
+    #[test]
+    fn routes_explicit_override() {
+        let req = mk_req(
+            &["1.2.3.0/24"],
+            Some(RouteMode::Split),
+            Some(&["10.0.0.0/8"]),
+            None,
+        );
+        let r = IpcHandler::compute_final_routes(&req);
+        assert_eq!(r, vec!["1.2.3.0/24".to_string(), "10.0.0.0/8".to_string()]);
     }
 }

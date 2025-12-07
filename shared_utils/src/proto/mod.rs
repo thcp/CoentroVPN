@@ -4,4 +4,5 @@
 //! between CoentroVPN components, including message framing, serialization,
 //! and other protocol-related functionality.
 
+pub mod auth;
 pub mod framing;

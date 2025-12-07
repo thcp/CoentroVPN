@@ -15,7 +15,7 @@ pub mod tunnel;
 pub mod webtransport; // Added
 
 // Re-export commonly used modules for convenience
-pub use config::{Config, ConfigManager, Role};
+pub use config::{AuthMode, Config, ConfigManager, Role};
 pub use crypto::aes_gcm::AesGcmCipher;
 pub use proto::framing;
 // Removed QuicTransport from re-export

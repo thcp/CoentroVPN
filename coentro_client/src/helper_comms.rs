@@ -118,20 +118,29 @@ impl HelperClient {
     }
 
     /// Set up a VPN tunnel
+    #[allow(clippy::too_many_arguments)]
     pub async fn setup_tunnel(
         &self,
         client_id: &str,
         requested_ip: Option<String>,
         routes: Vec<String>,
+        route_mode: Option<coentro_ipc::messages::RouteMode>,
+        include_routes: Option<Vec<String>>,
+        exclude_routes: Option<Vec<String>>,
         dns_servers: Option<Vec<String>>,
         mtu: Option<u32>,
     ) -> Result<TunnelReadyDetails, anyhow::Error> {
         let mut transport = self.transport.lock().await;
 
+        // NOTE: previous single-line literal with escaped newlines was malformed; keeping as comment for history
+        // let request = TunnelSetupRequest { .. };
         let request = TunnelSetupRequest {
             client_id: client_id.to_string(),
             requested_ip_config: requested_ip,
             routes_to_add: routes,
+            route_mode,
+            include_routes,
+            exclude_routes,
             dns_servers,
             mtu,
         };

@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: coentro-server-helper
+  namespace: coentrovpn
+  labels:
+    app: coentro-server-helper
+spec:
+  selector:
+    matchLabels:
+      app: coentro-server-helper
+  template:
+    metadata:
+      labels:
+        app: coentro-server-helper
+    spec:
+      serviceAccountName: coentro-server-helper
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: "Exists"
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+      containers:
+        - name: server-helper
+          image: ghcr.io/coentro/server-helper:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config"
+            - "/etc/coentrovpn/server-helper.toml"
+            - "--socket-path"
+            - "/var/run/coentrovpn/server_helper.sock"
+            - "--foreground"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/coentrovpn
+              readOnly: true
+            - name: run
+              mountPath: /var/run/coentrovpn
+            - name: modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: coentro-server-helper-config
+        - name: run
+          hostPath:
+            path: /var/run/coentrovpn
+            type: DirectoryOrCreate
+        - name: modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coentro-server-helper
+  namespace: coentrovpn
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: coentro-server-helper
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: coentro-server-helper
+subjects:
+  - kind: ServiceAccount
+    name: coentro-server-helper
+    namespace: coentrovpn
+roleRef:
+  kind: ClusterRole
+  name: coentro-server-helper
+  apiGroup: rbac.authorization.k8s.io

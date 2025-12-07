@@ -254,24 +254,7 @@ impl QuicServer {
             TransportError::Configuration(format!("Failed to configure TLS: {}", e))
         })?;
 
-        let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| {
-            TransportError::Configuration(format!("Failed to initialize server cipher: {}", e))
-        })?);
-
-        let mut server_config = ServerConfig::with_crypto(server_tls_config);
-        let mut transport_config = quinn::TransportConfig::default();
-        let idle_timeout = std::time::Duration::from_secs(30).try_into().map_err(|_| {
-            TransportError::Configuration("Invalid timeout duration for QUIC".into())
-        })?;
-        transport_config.max_idle_timeout(Some(idle_timeout));
-        transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-        server_config.transport = Arc::new(transport_config);
-
-        Ok(Self {
-            server_config,
-            cipher,
-            bind_addr,
-        })
+        Self::new_with_tls_config(bind_addr, key, server_tls_config)
     }
 
     /// Create a QUIC server using an explicit certificate and private key.
@@ -286,6 +269,15 @@ impl QuicServer {
             TransportError::Configuration(format!("Failed to configure TLS: {}", e))
         })?;
 
+        Self::new_with_tls_config(bind_addr, key, server_tls_config)
+    }
+
+    /// Create a QUIC server using a fully constructed rustls config (supports mTLS).
+    pub fn new_with_tls_config(
+        bind_addr: SocketAddr,
+        key: &[u8],
+        server_tls_config: Arc<rustls::ServerConfig>,
+    ) -> Result<Self, TransportError> {
         let cipher = Arc::new(AesGcmCipher::new(key).map_err(|e| {
             TransportError::Configuration(format!("Failed to initialize server cipher: {}", e))
         })?);

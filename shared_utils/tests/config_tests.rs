@@ -34,6 +34,11 @@ fn test_load_valid_server_config() {
     assert_eq!(config.network.bind_address, "127.0.0.1");
     assert_eq!(config.network.max_connections, 200);
     assert_eq!(config.security.psk, Some("test-key".to_string()));
+    assert_eq!(config.security.challenge_ttl_ms, 60_000);
+    assert_eq!(config.security.replay_cache_max_entries, 2048);
+    assert!(config.security.replay_cache_path.is_none());
+    assert!(!config.metrics.enabled);
+    assert_eq!(config.metrics.listen_addr, "127.0.0.1:9100");
     assert_eq!(
         config.server.virtual_ip_range,
         Some("10.0.0.0/24".to_string())
@@ -43,6 +48,12 @@ fn test_load_valid_server_config() {
         vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]
     );
     assert_eq!(config.server.routes, vec!["192.168.1.0/24".to_string()]);
+    assert!(config.server.dns_search_domains.is_empty());
+    assert_eq!(
+        config.server.helper_socket,
+        "/var/run/coentrovpn/server_helper.sock"
+    );
+    assert!(!config.server.enable_nat);
 }
 
 #[test]
@@ -75,6 +86,11 @@ fn test_load_valid_client_config() {
     assert_eq!(config.network.port, 8080);
     assert_eq!(config.network.bind_address, "0.0.0.0");
     assert_eq!(config.security.psk, Some("client-key".to_string()));
+    assert_eq!(config.security.challenge_ttl_ms, 60_000);
+    assert_eq!(config.security.replay_cache_max_entries, 2048);
+    assert!(config.security.replay_cache_path.is_none());
+    assert!(!config.metrics.enabled);
+    assert_eq!(config.metrics.listen_addr, "127.0.0.1:9100");
     assert_eq!(
         config.client.server_address,
         Some("vpn.example.com".to_string())
@@ -110,6 +126,60 @@ fn test_invalid_server_config() {
         }
         _ => panic!("Expected MissingValue error for virtual_ip_range"),
     }
+}
+
+#[test]
+fn test_auth_mode_none_rejected_when_required() {
+    let mut file = NamedTempFile::new().unwrap();
+    let config_str = r#"
+        role = "server"
+        log_level = "info"
+
+        [network]
+        port = 9091
+        bind_address = "0.0.0.0"
+
+        [security]
+        auth_required = true
+        auth_mode = "none"
+
+        [server]
+        virtual_ip_range = "10.0.0.0/24"
+    "#;
+    file.write_all(config_str.as_bytes()).unwrap();
+
+    let result = Config::load(file.path());
+    assert!(matches!(
+        result,
+        Err(ConfigError::InvalidValue { key, message })
+        if key == "security.auth_mode" && message.contains("not allowed when auth_required=true")
+    ));
+}
+
+#[test]
+fn test_mtls_missing_material_rejected() {
+    let mut file = NamedTempFile::new().unwrap();
+    let config_str = r#"
+        role = "server"
+        log_level = "info"
+
+        [network]
+        port = 9092
+        bind_address = "0.0.0.0"
+
+        [security]
+        auth_required = true
+        auth_mode = "mtls"
+
+        [server]
+        virtual_ip_range = "10.0.0.0/24"
+    "#;
+    file.write_all(config_str.as_bytes()).unwrap();
+
+    let result = Config::load(file.path());
+    assert!(
+        matches!(result, Err(ConfigError::MissingValue(msg)) if msg.contains("security.cert_path"))
+    );
 }
 
 #[test]
@@ -239,6 +309,9 @@ fn test_config_defaults() {
     assert_eq!(config.security.psk, None);
     assert_eq!(config.security.cert_path, None);
     assert_eq!(config.security.key_path, None);
+    assert_eq!(config.security.challenge_ttl_ms, 60_000);
+    assert_eq!(config.security.replay_cache_max_entries, 2048);
+    assert!(config.security.replay_cache_path.is_none());
 
     // Skip the verify_tls check for now as it seems to be inconsistent
     // We'll rely on the other tests to verify this behavior
@@ -248,6 +321,8 @@ fn test_config_defaults() {
     assert_eq!(config.server.virtual_ip_range, None);
     assert!(config.server.dns_servers.is_empty());
     assert!(config.server.routes.is_empty());
+    assert!(!config.metrics.enabled);
+    assert_eq!(config.metrics.listen_addr, "127.0.0.1:9100");
 }
 
 #[test]
@@ -262,7 +337,14 @@ fn test_save_and_load_roundtrip() {
         },
         security: shared_utils::config::SecurityConfig {
             psk: Some("test-key".to_string()),
+            challenge_ttl_ms: 15_000,
+            replay_cache_max_entries: 4096,
+            replay_cache_path: Some("/tmp/coentro/replay.bin".to_string()),
             ..Default::default()
+        },
+        metrics: shared_utils::config::MetricsConfig {
+            enabled: true,
+            listen_addr: "0.0.0.0:9200".to_string(),
         },
         server: shared_utils::config::ServerConfig {
             virtual_ip_range: Some("10.0.0.0/24".to_string()),
@@ -284,6 +366,15 @@ fn test_save_and_load_roundtrip() {
     assert_eq!(loaded_config.log_level, original_config.log_level);
     assert_eq!(loaded_config.network.port, original_config.network.port);
     assert_eq!(loaded_config.security.psk, original_config.security.psk);
+    assert_eq!(loaded_config.security.challenge_ttl_ms, 15_000);
+    assert_eq!(
+        loaded_config.security.replay_cache_max_entries,
+        original_config.security.replay_cache_max_entries
+    );
+    assert_eq!(
+        loaded_config.security.replay_cache_path,
+        original_config.security.replay_cache_path
+    );
     assert_eq!(
         loaded_config.server.virtual_ip_range,
         original_config.server.virtual_ip_range
@@ -291,5 +382,13 @@ fn test_save_and_load_roundtrip() {
     assert_eq!(
         loaded_config.server.dns_servers,
         original_config.server.dns_servers
+    );
+    assert_eq!(
+        loaded_config.metrics.enabled,
+        original_config.metrics.enabled
+    );
+    assert_eq!(
+        loaded_config.metrics.listen_addr,
+        original_config.metrics.listen_addr
     );
 }

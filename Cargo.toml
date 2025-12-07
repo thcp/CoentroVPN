@@ -8,5 +8,6 @@ members = [
     "shared_utils",
     "coentro_ipc",
     "coentro_helper",
-    "coentro_client"
+    "coentro_client",
+    "coentro_server_helper"
 ]
