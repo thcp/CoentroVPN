@@ -107,6 +107,26 @@ pub struct SecurityConfig {
     /// Path to TLS key file
     pub key_path: Option<String>,
 
+    /// Optional CA bundle used to validate remote peers (mTLS)
+    pub ca_bundle_path: Option<String>,
+
+    /// Optional client certificate path when this node authenticates upstream
+    pub client_cert_path: Option<String>,
+
+    /// Optional client private key path when this node authenticates upstream
+    pub client_key_path: Option<String>,
+
+    /// Require connecting peers to present a client certificate
+    #[serde(default = "default_true")]
+    pub require_client_cert: bool,
+
+    /// Optional inline list of revoked client certificate fingerprints (hex)
+    #[serde(default)]
+    pub revoked_cert_fingerprints: Vec<String>,
+
+    /// Optional path to a file containing revoked fingerprints (one per line)
+    pub revoked_fingerprints_path: Option<String>,
+
     /// Enable TLS verification (default: true)
     #[serde(default = "default_true")]
     pub verify_tls: bool,
@@ -136,6 +156,12 @@ impl Default for SecurityConfig {
             psk: None,
             cert_path: None,
             key_path: None,
+            ca_bundle_path: None,
+            client_cert_path: None,
+            client_key_path: None,
+            require_client_cert: default_true(),
+            revoked_cert_fingerprints: Vec::new(),
+            revoked_fingerprints_path: None,
             verify_tls: default_true(),
             challenge_ttl_ms: default_challenge_ttl_ms(),
             replay_cache_max_entries: default_replay_cache_max_entries(),
@@ -456,6 +482,12 @@ impl Config {
             }
         }
 
+        if self.security.auth_mode == AuthMode::Mtls && self.security.ca_bundle_path.is_none() {
+            return Err(ConfigError::MissingValue(
+                "security.ca_bundle_path must be provided when auth_mode=mtls".to_string(),
+            ));
+        }
+
         if self.security.challenge_ttl_ms == 0 {
             return Err(ConfigError::InvalidValue {
                 key: "security.challenge_ttl_ms".to_string(),
@@ -584,6 +616,37 @@ impl Config {
         if let Ok(v) = env::var("COENTROVPN_SECURITY_KEY_PATH") {
             if !v.is_empty() {
                 cfg.security.key_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_CA_BUNDLE_PATH") {
+            if !v.is_empty() {
+                cfg.security.ca_bundle_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_CLIENT_CERT_PATH") {
+            if !v.is_empty() {
+                cfg.security.client_cert_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_CLIENT_KEY_PATH") {
+            if !v.is_empty() {
+                cfg.security.client_key_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_REVOKED_CERT_FINGERPRINTS") {
+            let list = split_csv(&v);
+            if !list.is_empty() {
+                cfg.security.revoked_cert_fingerprints = list;
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_REVOKED_FINGERPRINTS_PATH") {
+            if !v.is_empty() {
+                cfg.security.revoked_fingerprints_path = Some(v);
+            }
+        }
+        if let Ok(v) = env::var("COENTROVPN_SECURITY_REQUIRE_CLIENT_CERT") {
+            if let Some(b) = parse_bool(&v) {
+                cfg.security.require_client_cert = b;
             }
         }
         if let Ok(v) = env::var("COENTROVPN_SECURITY_VERIFY_TLS") {

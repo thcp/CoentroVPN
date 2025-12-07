@@ -129,6 +129,58 @@ fn test_invalid_server_config() {
 }
 
 #[test]
+fn test_auth_mode_none_rejected_when_required() {
+    let mut file = NamedTempFile::new().unwrap();
+    let config_str = r#"
+        role = "server"
+        log_level = "info"
+
+        [network]
+        port = 9091
+        bind_address = "0.0.0.0"
+
+        [security]
+        auth_required = true
+        auth_mode = "none"
+
+        [server]
+        virtual_ip_range = "10.0.0.0/24"
+    "#;
+    file.write_all(config_str.as_bytes()).unwrap();
+
+    let result = Config::load(file.path());
+    assert!(matches!(
+        result,
+        Err(ConfigError::InvalidValue { key, message })
+        if key == "security.auth_mode" && message.contains("not allowed when auth_required=true")
+    ));
+}
+
+#[test]
+fn test_mtls_missing_material_rejected() {
+    let mut file = NamedTempFile::new().unwrap();
+    let config_str = r#"
+        role = "server"
+        log_level = "info"
+
+        [network]
+        port = 9092
+        bind_address = "0.0.0.0"
+
+        [security]
+        auth_required = true
+        auth_mode = "mtls"
+
+        [server]
+        virtual_ip_range = "10.0.0.0/24"
+    "#;
+    file.write_all(config_str.as_bytes()).unwrap();
+
+    let result = Config::load(file.path());
+    assert!(matches!(result, Err(ConfigError::MissingValue(msg)) if msg.contains("security.cert_path")));
+}
+
+#[test]
 fn test_invalid_client_config() {
     let mut file = NamedTempFile::new().unwrap();
 

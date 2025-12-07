@@ -20,6 +20,8 @@ type HmacSha256 = Hmac<Sha256>;
 const NONCE_LEN: usize = 32;
 const AUTH_VERSION: u8 = 1;
 const DEFAULT_CHALLENGE_TTL: Duration = Duration::from_secs(60);
+const METRIC_REPLAY_CACHE_ENTRIES: &str = "coentrovpn_auth_replay_cache_entries";
+const METRIC_REPLAY_REJECT_TOTAL: &str = "coentrovpn_auth_replay_reject_total";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ControlAuthMessage {
@@ -277,8 +279,11 @@ impl AuthMetrics {
 }
 
 /// Replay cache backend abstraction.
-pub trait ReplayCacheProvider: std::fmt::Debug + Send + Sync {
+pub trait ReplayCacheProvider: std::fmt::Debug + Send + Sync + 'static {
     fn register(&self, nonce: &[u8], ttl: Duration) -> bool;
+    fn len(&self) -> usize {
+        0
+    }
 }
 
 /// Simple in-memory replay cache to detect reused nonces.
@@ -322,7 +327,15 @@ impl ReplayCache {
 
 impl ReplayCacheProvider for ReplayCache {
     fn register(&self, nonce: &[u8], ttl: Duration) -> bool {
-        self.insert(nonce, ttl)
+        let inserted = self.insert(nonce, ttl);
+        if inserted {
+            metrics::gauge!(METRIC_REPLAY_CACHE_ENTRIES, self.len() as f64);
+        }
+        inserted
+    }
+
+    fn len(&self) -> usize {
+        self.entries.lock().unwrap().len()
     }
 }
 
@@ -398,8 +411,13 @@ impl ReplayCacheProvider for PersistentReplayCache {
         let result = self.inner.insert(nonce, ttl);
         if result {
             self.persist();
+            metrics::gauge!(METRIC_REPLAY_CACHE_ENTRIES, self.len() as f64);
         }
         result
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -486,6 +504,21 @@ where
         }
         return Err(TransportError::Protocol("invalid mac".into()));
     }
+    if let Some(cache) = &config.replay_cache {
+        if !cache.register(&challenge.nonce, config.challenge_ttl) {
+            warn!("replayed authentication challenge detected");
+            let _ = conn
+                .send_data(&encode_ctrl(&ControlAuthMessage::AuthReject {
+                    reason: "replayed challenge".into(),
+                })?)
+                .await;
+            metrics::counter!(METRIC_REPLAY_REJECT_TOTAL, 1);
+            if let Some(metrics) = &config.metrics {
+                metrics.record_failure();
+            }
+            return Err(TransportError::Protocol("replayed challenge".into()));
+        }
+    }
 
     // 4) Issue session id
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -503,6 +536,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use tokio::sync::{mpsc, Mutex};
 
     #[test]
     fn test_hmac_and_challenge() {
@@ -550,5 +585,85 @@ mod tests {
         assert!(cache.register(&[4, 5, 6], ttl));
         std::thread::sleep(ttl + Duration::from_millis(10));
         assert!(cache.register(&[1, 2, 3], ttl));
+    }
+
+    #[derive(Debug)]
+    struct DenyReplayCache;
+    impl ReplayCacheProvider for DenyReplayCache {
+        fn register(&self, _nonce: &[u8], _ttl: Duration) -> bool {
+            false
+        }
+    }
+
+    struct InMemoryConn {
+        tx: mpsc::Sender<Vec<u8>>,
+        rx: Mutex<mpsc::Receiver<Vec<u8>>>,
+    }
+
+    impl InMemoryConn {
+        fn pair() -> (Self, Self) {
+            let (server_tx, server_rx) = mpsc::channel::<Vec<u8>>(8);
+            let (client_tx, client_rx) = mpsc::channel::<Vec<u8>>(8);
+            (
+                Self {
+                    tx: server_tx,
+                    rx: Mutex::new(client_rx),
+                },
+                Self {
+                    tx: client_tx,
+                    rx: Mutex::new(server_rx),
+                },
+            )
+        }
+    }
+
+    #[async_trait]
+    impl Connection for InMemoryConn {
+        async fn send_data(&mut self, data: &[u8]) -> Result<(), TransportError> {
+            self.tx
+                .send(data.to_vec())
+                .await
+                .map_err(|e| TransportError::Send(e.to_string()))
+        }
+
+        async fn recv_data(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+            let mut rx = self.rx.lock().await;
+            Ok(rx.recv().await)
+        }
+
+        fn peer_addr(&self) -> Result<std::net::SocketAddr, TransportError> {
+            "127.0.0.1:0".parse().map_err(TransportError::AddrParse)
+        }
+
+        fn local_addr(&self) -> Result<std::net::SocketAddr, TransportError> {
+            "127.0.0.1:0".parse().map_err(TransportError::AddrParse)
+        }
+
+        async fn close(self: Box<Self>) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_replayed_nonce_via_cache() {
+        let (mut server_conn, mut client_conn) = InMemoryConn::pair();
+        let server_cfg = ServerAuthConfig::new(DEFAULT_CHALLENGE_TTL)
+            .with_replay_cache(Arc::new(DenyReplayCache));
+        let server = tokio::spawn(async move {
+            psk_handshake_server_with_config(&mut server_conn, || parse_psk("YWFh"), &server_cfg)
+                .await
+        });
+
+        let client_res = psk_handshake_client(&mut client_conn, "YWFh").await;
+        assert!(matches!(
+            client_res,
+            Err(TransportError::Protocol(msg)) if msg.contains("replayed")
+        ));
+
+        let server_res = server.await.expect("server task panicked");
+        assert!(matches!(
+            server_res,
+            Err(TransportError::Protocol(msg)) if msg.contains("replayed")
+        ));
     }
 }

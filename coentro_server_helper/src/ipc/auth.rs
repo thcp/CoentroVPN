@@ -118,3 +118,100 @@ impl std::fmt::Display for AuthError {
 }
 
 impl std::error::Error for AuthError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::messages::{AuthHeader, ServerRequest};
+    use crate::ipc::transport::message_bincode_config;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    const SECRET: &[u8] = b"phase3-secret-material";
+
+    fn helper_token() -> HelperToken {
+        HelperToken {
+            id: "token-1".into(),
+            secret: STANDARD.encode(SECRET),
+        }
+    }
+
+    fn registry_with_token() -> TokenRegistry {
+        TokenRegistry::from_tokens(&[helper_token()]).expect("token registry")
+    }
+
+    fn signed_header(request: &ServerRequest, nonce: u64) -> AuthHeader {
+        let serialized = message_bincode_config()
+            .serialize(request)
+            .expect("serialize request");
+        let mut mac =
+            HmacSha256::new_from_slice(SECRET).expect("construct hmac with static secret");
+        mac.update(&nonce.to_le_bytes());
+        mac.update(&serialized);
+        let signature = mac.finalize().into_bytes().to_vec();
+        AuthHeader {
+            token_id: "token-1".into(),
+            nonce,
+            signature,
+        }
+    }
+
+    #[test]
+    fn allows_requests_when_auth_disabled() {
+        let registry = TokenRegistry::from_tokens(&[]).unwrap();
+        assert!(registry.verify(None, &ServerRequest::Ping).is_ok());
+    }
+
+    #[test]
+    fn rejects_missing_auth_when_tokens_required() {
+        let registry = registry_with_token();
+        let err = registry
+            .verify(None, &ServerRequest::Ping)
+            .expect_err("missing auth should fail");
+        assert!(matches!(err, AuthError::Missing));
+    }
+
+    #[test]
+    fn rejects_unknown_token_id() {
+        let registry = registry_with_token();
+        let mut header = signed_header(&ServerRequest::Ping, 42);
+        header.token_id = "other".into();
+        let err = registry
+            .verify(Some(&header), &ServerRequest::Ping)
+            .expect_err("unknown token expected");
+        assert!(matches!(err, AuthError::UnknownToken));
+    }
+
+    #[test]
+    fn rejects_invalid_signature() {
+        let registry = registry_with_token();
+        let mut header = signed_header(&ServerRequest::Ping, 7);
+        header.signature.reverse();
+        let err = registry
+            .verify(Some(&header), &ServerRequest::Ping)
+            .expect_err("invalid signature expected");
+        assert!(matches!(err, AuthError::InvalidSignature));
+    }
+
+    #[test]
+    fn rejects_replayed_nonce() {
+        let registry = registry_with_token();
+        let header = signed_header(&ServerRequest::Ping, 99);
+        // First attempt succeeds.
+        registry
+            .verify(Some(&header), &ServerRequest::Ping)
+            .expect("initial verification");
+        // Second attempt should be detected as replay.
+        let err = registry
+            .verify(Some(&header), &ServerRequest::Ping)
+            .expect_err("replay must fail");
+        assert!(matches!(err, AuthError::Replay));
+    }
+
+    #[test]
+    fn accepts_valid_signature() {
+        let registry = registry_with_token();
+        let header = signed_header(&ServerRequest::Ping, 123);
+        assert!(registry.verify(Some(&header), &ServerRequest::Ping).is_ok());
+    }
+}

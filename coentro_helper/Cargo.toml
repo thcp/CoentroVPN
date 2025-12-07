@@ -21,3 +21,5 @@ tokio-stream = "0.1"
 async-stream = "0.3"
 # We'll use libc directly for socket activation instead of the launch crate
 tracing = "0.1"
+metrics = "0.21"
+metrics-exporter-prometheus = "0.14"

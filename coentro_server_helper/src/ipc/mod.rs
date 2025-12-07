@@ -16,7 +16,7 @@ use messages::{
     DestroyTunnelResponse, ErrorCode, ErrorResponse, MetricsSnapshotResponse, ServerRequest,
     ServerResponse, TunnelCreatedResponse, TunnelMetrics,
 };
-use metrics::gauge;
+use metrics::{counter, gauge};
 use nix::unistd::close;
 use shared_utils::config::HelperConfig;
 use std::collections::HashMap;
@@ -44,6 +44,13 @@ const INTERFACE_PREFIX: &str = "srv";
 const MAX_PACKET_SIZE: usize = 2048;
 const TUN_WRITE_QUEUE_CAPACITY: usize = 256;
 const TUN_BROADCAST_CAPACITY: usize = 256;
+
+const METRIC_ACTIVE_SESSIONS: &str = "coentrovpn_server_helper_sessions";
+const METRIC_SESSIONS_CREATED_TOTAL: &str = "coentrovpn_server_helper_sessions_created_total";
+const METRIC_SESSIONS_CLOSED_TOTAL: &str = "coentrovpn_server_helper_sessions_closed_total";
+const METRIC_BYTES_TOTAL: &str = "coentrovpn_server_helper_bytes_total";
+const METRIC_PACKETS_TOTAL: &str = "coentrovpn_server_helper_packets_total";
+const METRIC_ERRORS_TOTAL: &str = "coentrovpn_server_helper_errors_total";
 
 #[derive(Debug)]
 pub struct ServerIpcServer {
@@ -172,6 +179,162 @@ impl Drop for ServerIpcServer {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::net::UnixStream as StdUnixStream;
+    use crate::ipc::messages::{DnsConfig, RouteSpec, TunnelAddress};
+    use crate::network::NatState;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::{timeout, Duration};
+
+    #[derive(Default)]
+    struct MockInterfaceManager {
+        peers: Mutex<Vec<StdUnixStream>>,
+    }
+
+    impl MockInterfaceManager {
+        async fn take_peer(&self) -> Option<StdUnixStream> {
+            self.peers.lock().await.pop()
+        }
+    }
+
+    #[async_trait]
+    impl InterfaceManager for MockInterfaceManager {
+        async fn ensure_forwarding(&self) -> InterfaceResult<()> {
+            Ok(())
+        }
+
+        async fn ensure_tun(&self, config: &TunConfig) -> InterfaceResult<TunDescriptor> {
+            let (peer, helper) = StdUnixStream::pair().map_err(InterfaceError::Io)?;
+            peer.set_nonblocking(true).ok();
+            helper.set_nonblocking(true).ok();
+            self.peers.lock().await.push(peer);
+            let fd = helper.into_raw_fd();
+            Ok(TunDescriptor {
+                name: config
+                    .name_hint
+                    .clone()
+                    .unwrap_or_else(|| format!("{}0", config.name_prefix)),
+                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+                mtu: config.mtu,
+                ipv4_cidr: config.ipv4_cidr.clone(),
+                sysctl_touched: None,
+            })
+        }
+
+        async fn teardown_tun(&self, _name: &str) -> InterfaceResult<()> {
+            Ok(())
+        }
+
+        async fn cleanup_stale_interfaces(&self, _prefix: &str) -> InterfaceResult<()> {
+            Ok(())
+        }
+
+        async fn apply_policy(
+            &self,
+            _interface: &str,
+            _routes: &[RouteSpec],
+            _dns: Option<&DnsConfig>,
+        ) -> InterfaceResult<PolicyState> {
+            Ok(PolicyState::default())
+        }
+
+        async fn rollback_policy(&self, _interface: &str, _state: &PolicyState) -> InterfaceResult<()> {
+            Ok(())
+        }
+
+        async fn apply_nat(&self, _interface: &str, _cidr: &str) -> InterfaceResult<Option<NatState>> {
+            Ok(None)
+        }
+
+        async fn rollback_nat(&self, _interface: &str, _state: &NatState) -> InterfaceResult<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_and_tun_round_trip() {
+        let iface = Arc::new(MockInterfaceManager::default());
+        let auth = TokenRegistry::from_tokens(&[]).expect("token registry");
+        let persistence = Arc::new(Persistence::default());
+        let state = HelperState::new(iface.clone(), auth, persistence);
+        state.initialize().await.expect("init");
+
+        let req = CreateTunnelRequest {
+            session_id: "sess1".into(),
+            virtual_address: TunnelAddress {
+                address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                prefix: 24,
+            },
+            routes: vec![],
+            dns: None,
+            mtu: Some(1200),
+            enable_nat: false,
+        };
+        state.create_tunnel(req).await.expect("create tunnel");
+
+        let (client_sock, helper_sock) = StdUnixStream::pair().expect("socketpair");
+        client_sock.set_nonblocking(true).ok();
+        helper_sock.set_nonblocking(true).ok();
+        state
+            .attach_transport(
+                AttachQuicRequest {
+                    session_id: "sess1".into(),
+                    flow_id: None,
+                    stream_count: Some(1),
+                },
+                Some(helper_sock.into_raw_fd()),
+            )
+            .await
+            .expect("attach");
+
+        let mut client_stream = tokio::net::UnixStream::from_std(client_sock).expect("tokio stream");
+        let tun_peer = iface.take_peer().await.expect("tun peer present");
+        let mut tun_stream = tokio::net::UnixStream::from_std(tun_peer).expect("tokio tun");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        // Transport -> TUN
+        let payload = vec![0xAA, 0xBB, 0xCC];
+        let len_bytes = (payload.len() as u16).to_be_bytes();
+        client_stream.write_all(&len_bytes).await.expect("write len");
+        client_stream.write_all(&payload).await.expect("write payload");
+
+        let mut tun_buf = vec![0u8; payload.len()];
+        timeout(Duration::from_secs(1), tun_stream.read_exact(&mut tun_buf))
+            .await
+            .expect("read timeout")
+            .expect("tun read");
+        assert_eq!(tun_buf, payload);
+
+        // TUN -> Transport
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let payload2 = vec![0x01, 0x02, 0x03, 0x04];
+        {
+            let sessions = state.sessions.lock().await;
+            let entry = sessions.get("sess1").expect("session present");
+            let _ = entry.tun_bridge.broadcast_tx.send(Arc::new(payload2.clone()));
+        }
+
+        let mut len_buf = [0u8; 2];
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        timeout(Duration::from_secs(1), client_stream.read_exact(&mut len_buf))
+            .await
+            .expect("client len timeout")
+            .expect("client len read");
+        let len = u16::from_be_bytes(len_buf) as usize;
+        let mut recv_buf = vec![0u8; len];
+        timeout(Duration::from_secs(1), client_stream.read_exact(&mut recv_buf))
+            .await
+            .expect("client payload timeout")
+            .expect("client payload read");
+        assert_eq!(recv_buf, payload2);
     }
 }
 
@@ -368,7 +531,7 @@ impl HelperState {
         self.interface_manager
             .cleanup_stale_interfaces(INTERFACE_PREFIX)
             .await?;
-        gauge!("coentrovpn_server_helper_sessions", 0.0);
+        gauge!(METRIC_ACTIVE_SESSIONS, 0.0);
         Ok(())
     }
 
@@ -379,7 +542,7 @@ impl HelperState {
                 .drain()
                 .map(|(id, entry)| (id, entry))
                 .collect::<Vec<_>>();
-            gauge!("coentrovpn_server_helper_sessions", 0.0);
+            gauge!(METRIC_ACTIVE_SESSIONS, 0.0);
             drained
         };
 
@@ -497,8 +660,9 @@ impl HelperState {
         {
             let mut sessions = self.sessions.lock().await;
             sessions.insert(request.session_id.clone(), entry);
-            gauge!("coentrovpn_server_helper_sessions", sessions.len() as f64);
+            gauge!(METRIC_ACTIVE_SESSIONS, sessions.len() as f64);
         }
+        counter!(METRIC_SESSIONS_CREATED_TOTAL, 1);
 
         Ok(response)
     }
@@ -558,13 +722,14 @@ impl HelperState {
         let entry = {
             let mut sessions = self.sessions.lock().await;
             let entry = sessions.remove(&request.session_id);
-            gauge!("coentrovpn_server_helper_sessions", sessions.len() as f64);
+            gauge!(METRIC_ACTIVE_SESSIONS, sessions.len() as f64);
             entry
         };
 
         let mut entry = entry.ok_or_else(|| {
             ActionError::NotFound(format!("session {} not found", request.session_id))
         })?;
+        counter!(METRIC_SESSIONS_CLOSED_TOTAL, 1);
 
         entry.close_transport();
         if let Some(nat_state) = entry.policy_state.nat.as_ref() {
@@ -760,11 +925,29 @@ impl TunBridge {
                         if broadcast_reader.send(packet).is_ok() {
                             bytes_out_reader.fetch_add(n as u64, Ordering::Relaxed);
                             packets_out_reader.fetch_add(1, Ordering::Relaxed);
+                            counter!(
+                                METRIC_BYTES_TOTAL,
+                                n as u64,
+                                "direction" => "egress",
+                                "interface" => reader_interface.clone()
+                            );
+                            counter!(
+                                METRIC_PACKETS_TOTAL,
+                                1,
+                                "direction" => "egress",
+                                "interface" => reader_interface.clone()
+                            );
                         }
                     }
                     Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
                     Err(e) => {
                         warn!(interface = %reader_interface, "TUN read error: {e}");
+                        counter!(
+                            METRIC_ERRORS_TOTAL,
+                            1,
+                            "kind" => "tun_read",
+                            "interface" => reader_interface.clone()
+                        );
                         break;
                     }
                 }
@@ -779,12 +962,31 @@ impl TunBridge {
             let mut writer = File::from_std(std_writer);
             let mut rx = writer_rx;
             while let Some(packet) = rx.recv().await {
+                let packet_len = packet.len();
                 if let Err(e) = writer.write_all(&packet).await {
                     warn!(interface = %writer_interface, "TUN write error: {e}");
+                    counter!(
+                        METRIC_ERRORS_TOTAL,
+                        1,
+                        "kind" => "tun_write",
+                        "interface" => writer_interface.clone()
+                    );
                     break;
                 }
-                bytes_in_writer.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                bytes_in_writer.fetch_add(packet_len as u64, Ordering::Relaxed);
                 packets_in_writer.fetch_add(1, Ordering::Relaxed);
+                counter!(
+                    METRIC_BYTES_TOTAL,
+                    packet_len as u64,
+                    "direction" => "ingress",
+                    "interface" => writer_interface.clone()
+                );
+                counter!(
+                    METRIC_PACKETS_TOTAL,
+                    1,
+                    "direction" => "ingress",
+                    "interface" => writer_interface.clone()
+                );
             }
         });
 
@@ -860,16 +1062,34 @@ impl TransportBridge {
                                 len = packet_len,
                                 "packet exceeds u16 length, dropping"
                             );
+                            counter!(
+                                METRIC_ERRORS_TOTAL,
+                                1,
+                                "kind" => "transport_packet_oversize",
+                                "flow" => flow_for_writer.clone()
+                            );
                             continue;
                         }
 
                         let len_bytes = (packet_len as u16).to_be_bytes();
                         if let Err(e) = writer.write_all(&len_bytes).await {
                             warn!(flow = %flow_for_writer, "transport write error (len): {e}");
+                            counter!(
+                                METRIC_ERRORS_TOTAL,
+                                1,
+                                "kind" => "transport_write_len",
+                                "flow" => flow_for_writer.clone()
+                            );
                             break;
                         }
                         if let Err(e) = writer.write_all(&packet).await {
                             warn!(flow = %flow_for_writer, "transport write error (payload): {e}");
+                            counter!(
+                                METRIC_ERRORS_TOTAL,
+                                1,
+                                "kind" => "transport_write_payload",
+                                "flow" => flow_for_writer.clone()
+                            );
                             break;
                         }
                         writer_bytes.fetch_add(packet_len as u64, Ordering::Relaxed);
@@ -877,6 +1097,12 @@ impl TransportBridge {
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(flow = %flow_for_writer, skipped, "transport receiver lagged behind");
+                        counter!(
+                            METRIC_ERRORS_TOTAL,
+                            1,
+                            "kind" => "transport_broadcast_lag",
+                            "flow" => flow_for_writer.clone()
+                        );
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -897,6 +1123,12 @@ impl TransportBridge {
                     Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
                     Err(e) => {
                         warn!(flow = %flow_for_reader, "transport read error (len): {e}");
+                        counter!(
+                            METRIC_ERRORS_TOTAL,
+                            1,
+                            "kind" => "transport_read_len",
+                            "flow" => flow_for_reader.clone()
+                        );
                         break;
                     }
                 }
@@ -911,9 +1143,21 @@ impl TransportBridge {
                         packet_len,
                         "declared packet length exceeds max, draining"
                     );
+                    counter!(
+                        METRIC_ERRORS_TOTAL,
+                        1,
+                        "kind" => "transport_packet_declared_oversize",
+                        "flow" => flow_for_reader.clone()
+                    );
                     let mut drain = vec![0u8; packet_len];
                     if let Err(e) = reader.read_exact(&mut drain).await {
                         warn!(flow = %flow_for_reader, "transport read error (oversize drain): {e}");
+                        counter!(
+                            METRIC_ERRORS_TOTAL,
+                            1,
+                            "kind" => "transport_read_oversize_drain",
+                            "flow" => flow_for_reader.clone()
+                        );
                         break;
                     }
                     continue;
@@ -928,11 +1172,23 @@ impl TransportBridge {
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             warn!(flow = %flow_for_reader, "tun write queue full, dropping packet");
+                            counter!(
+                                METRIC_ERRORS_TOTAL,
+                                1,
+                                "kind" => "tun_queue_full",
+                                "flow" => flow_for_reader.clone()
+                            );
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => break,
                     },
                     Err(e) => {
                         warn!(flow = %flow_for_reader, "transport read error (payload): {e}");
+                        counter!(
+                            METRIC_ERRORS_TOTAL,
+                            1,
+                            "kind" => "transport_read_payload",
+                            "flow" => flow_for_reader.clone()
+                        );
                         break;
                     }
                 }

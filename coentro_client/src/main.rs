@@ -9,9 +9,17 @@ mod tun_handler;
 
 use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
 use clap::{Parser, Subcommand};
+use rustls::{Certificate as RustlsCertificate, PrivateKey as RustlsPrivateKey};
+use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use shared_utils::logging::{init_logging, LogOptions};
+use shared_utils::quic::configure_client_tls_with_roots_and_identity;
 use shared_utils::transport::ClientTransport;
-use std::path::PathBuf;
+use metrics::{counter, gauge};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::fs::File;
+use std::io::BufReader;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -31,6 +39,14 @@ struct Args {
     /// Run a simple ping test to the helper daemon
     #[clap(long)]
     ping_helper: bool,
+
+    /// Enable Prometheus metrics exporter (disabled by default)
+    #[clap(long)]
+    metrics_enabled: bool,
+
+    /// Prometheus listen address (only used when metrics_enabled=true)
+    #[clap(long, default_value = "127.0.0.1:9201")]
+    metrics_listen: String,
 
     /// Subcommand to execute
     #[clap(subcommand)]
@@ -125,6 +141,23 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     });
 
+    // Start Prometheus exporter if enabled
+    let _metrics_handle: Option<PrometheusHandle> = if args.metrics_enabled {
+        let listen_addr: SocketAddr = args
+            .metrics_listen
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid metrics listen address: {e}"))?;
+        info!("Prometheus metrics endpoint listening on {}", listen_addr);
+        Some(
+            PrometheusBuilder::new()
+                .with_http_listener(listen_addr)
+                .install_recorder()
+                .map_err(|e| anyhow::anyhow!("failed to install Prometheus exporter: {e}"))?,
+        )
+    } else {
+        None
+    };
+
     info!("CoentroVPN Client starting up");
     debug!("Helper socket path: {}", args.helper_socket.display());
 
@@ -161,8 +194,8 @@ async fn main() -> anyhow::Result<()> {
             mtu,
             server,
             psk,
-            cert: _cert,
-            key: _key,
+            cert,
+            key,
             ca,
             no_wait,
             split_default,
@@ -234,7 +267,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Initialize QUIC client (secure-by-default TLS, encryption key for payload)
                 // Derive data-plane key from PSK if provided; else generate a random key for local testing
-                let key: [u8; 32] = if let Some(psk_str_clone) = psk.clone() {
+                let data_key: [u8; 32] = if let Some(psk_str_clone) = psk.clone() {
                     let psk_bytes = match shared_utils::proto::auth::parse_psk(&psk_str_clone) {
                         Ok(b) => b,
                         Err(e) => {
@@ -250,38 +283,32 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     shared_utils::AesGcmCipher::generate_key()
                 };
-                // If a CA is provided, use pinned roots for TLS validation
-                let quic_client = if let Some(ca_path) = ca.clone() {
-                    use rustls_pemfile::certs;
-                    use std::fs::File;
-                    use std::io::BufReader;
-                    let mut reader = BufReader::new(
-                        File::open(&ca_path)
-                            .map_err(|e| anyhow::anyhow!("Failed to open CA: {}", e))?,
-                    );
-                    let chain = certs(&mut reader)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse CA PEM: {}", e))?;
-                    if chain.is_empty() {
-                        return Err(anyhow::anyhow!("No certificates found in CA file"));
-                    }
-                    let anchors: Vec<rustls::Certificate> =
-                        chain.into_iter().map(rustls::Certificate).collect();
-                    match shared_utils::QuicClient::new_with_pinned_roots(&key, &anchors) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            error!("Failed to initialize QUIC client with pinned CA: {}", e);
-                            return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
-                        }
-                    }
+                let pinned_roots = if let Some(ca_path) = ca.as_ref() {
+                    Some(load_certificate_chain(ca_path)?)
                 } else {
-                    match shared_utils::QuicClient::new(&key) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            error!("Failed to initialize QUIC client: {}", e);
-                            return Err(anyhow::anyhow!("Failed to initialize QUIC client: {}", e));
-                        }
+                    None
+                };
+                let client_identity = match (cert.as_ref(), key.as_ref()) {
+                    (Some(cert_path), Some(key_path)) => {
+                        Some(load_client_identity(cert_path, key_path)?)
+                    }
+                    (None, None) => None,
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "--cert and --key must be provided together for mTLS"
+                        ))
                     }
                 };
+
+                let tls_config = configure_client_tls_with_roots_and_identity(
+                    pinned_roots,
+                    client_identity,
+                    true,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to build TLS config: {e}"))?;
+
+                let quic_client = shared_utils::QuicClient::from_tls_config(&data_key, tls_config)
+                    .map_err(|e| anyhow::anyhow!("Failed to initialize QUIC client: {e}"))?;
 
                 let mut connection = match quic_client.connect(&server_addr).await {
                     Ok(conn) => conn,
@@ -337,6 +364,12 @@ async fn main() -> anyhow::Result<()> {
                         error!("Tunnel error: {}", e);
                     }
                 });
+                counter!(
+                    "coentrovpn_client_tunnel_setups_total",
+                    1,
+                    "status" => "success"
+                );
+                gauge!("coentrovpn_client_active_tunnels", 1.0);
 
                 if !no_wait {
                     info!("Tunnel is active. Press Ctrl+C to tear down the tunnel and exit.");
@@ -353,9 +386,19 @@ async fn main() -> anyhow::Result<()> {
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
                     error!("Failed to tear down tunnel: {}", e);
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "error"
+                    );
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
-
+                counter!(
+                    "coentrovpn_client_tunnel_teardowns_total",
+                    1,
+                    "status" => "success"
+                );
+                gauge!("coentrovpn_client_active_tunnels", 0.0);
                 info!("Tunnel torn down successfully.");
             } else {
                 if !no_wait {
@@ -370,9 +413,19 @@ async fn main() -> anyhow::Result<()> {
                 // Tear down the tunnel
                 if let Err(e) = helper_client.teardown_tunnel().await {
                     error!("Failed to tear down tunnel: {}", e);
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "error"
+                    );
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
-
+                counter!(
+                    "coentrovpn_client_tunnel_teardowns_total",
+                    1,
+                    "status" => "success"
+                );
+                gauge!("coentrovpn_client_active_tunnels", 0.0);
                 info!("Tunnel torn down successfully.");
             }
         }
@@ -381,10 +434,21 @@ async fn main() -> anyhow::Result<()> {
 
             match helper_client.teardown_tunnel().await {
                 Ok(()) => {
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "success"
+                    );
+                    gauge!("coentrovpn_client_active_tunnels", 0.0);
                     info!("Tunnel torn down successfully.");
                 }
                 Err(e) => {
                     error!("Failed to tear down tunnel: {}", e);
+                    counter!(
+                        "coentrovpn_client_tunnel_teardowns_total",
+                        1,
+                        "status" => "error"
+                    );
                     return Err(anyhow::anyhow!("Failed to tear down tunnel: {}", e));
                 }
             }
@@ -414,4 +478,55 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_certificate_chain(path: &Path) -> anyhow::Result<Vec<RustlsCertificate>> {
+    let file = File::open(path).map_err(|e| {
+        anyhow::anyhow!("Failed to open certificate file {}: {}", path.display(), e)
+    })?;
+    let mut reader = BufReader::new(file);
+    let entries = certs(&mut reader).map_err(|e| {
+        anyhow::anyhow!("Failed to parse certificate PEM {}: {}", path.display(), e)
+    })?;
+    if entries.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No certificates found in {}",
+            path.display()
+        ));
+    }
+    Ok(entries.into_iter().map(RustlsCertificate).collect())
+}
+
+fn load_client_identity(
+    cert_path: &Path,
+    key_path: &Path,
+) -> anyhow::Result<(Vec<RustlsCertificate>, RustlsPrivateKey)> {
+    let chain = load_certificate_chain(cert_path)?;
+    let key = load_private_key(key_path)?;
+    Ok((chain, key))
+}
+
+fn load_private_key(path: &Path) -> anyhow::Result<RustlsPrivateKey> {
+    let file = File::open(path)
+        .map_err(|e| anyhow::anyhow!("Failed to open private key {}: {}", path.display(), e))?;
+    let mut reader = BufReader::new(file);
+    let mut keys = pkcs8_private_keys(&mut reader)
+        .map_err(|e| anyhow::anyhow!("Failed to parse PKCS8 key {}: {}", path.display(), e))?;
+    if let Some(key) = keys.pop() {
+        return Ok(RustlsPrivateKey(key));
+    }
+
+    let file = File::open(path)
+        .map_err(|e| anyhow::anyhow!("Failed to open private key {}: {}", path.display(), e))?;
+    let mut reader = BufReader::new(file);
+    let mut rsa_keys = rsa_private_keys(&mut reader)
+        .map_err(|e| anyhow::anyhow!("Failed to parse RSA key {}: {}", path.display(), e))?;
+    if let Some(key) = rsa_keys.pop() {
+        return Ok(RustlsPrivateKey(key));
+    }
+
+    Err(anyhow::anyhow!(
+        "No usable private keys found in {}",
+        path.display()
+    ))
 }

@@ -31,6 +31,7 @@ coentro_server_helper = { path = "../coentro_server_helper" }
 
 # Metrics exporter
 metrics-exporter-prometheus = "0.14"
+metrics = "0.21"
 
 # Command-line argument parsing
 clap = { version = "4.4.6", features = ["derive"] }

@@ -13,6 +13,8 @@ mod sleep_monitor;
 use clap::Parser;
 use shared_utils::config::Config;
 use shared_utils::logging::{init_logging, LogOptions};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::net::SocketAddr;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use tokio::signal::unix::{signal, SignalKind};
@@ -107,12 +109,10 @@ async fn main() -> anyhow::Result<()> {
         "Attempting to load configuration from {}",
         args.config.display()
     );
-    let config_result = Config::load(&args.config);
-    let allowed_uids = match &config_result {
-        Ok(config) => {
+    let config = match Config::load(&args.config) {
+        Ok(cfg) => {
             info!("Loaded configuration from {}", args.config.display());
-            info!("Allowed UIDs: {:?}", config.helper.allowed_uids);
-            config.helper.allowed_uids.clone()
+            cfg
         }
         Err(e) => {
             warn!(
@@ -121,20 +121,36 @@ async fn main() -> anyhow::Result<()> {
                 e
             );
             warn!("Using default configuration");
-            Vec::new()
+            Config::default()
         }
     };
+    let allowed_uids = config.helper.allowed_uids.clone();
 
     // Group-based auth from configuration (optional)
-    let allowed_gids = match &config_result {
-        Ok(config) if !config.helper.allowed_gids.is_empty() => {
-            info!(
-                "Group-based authentication: allowing GIDs from config: {:?}",
-                config.helper.allowed_gids
-            );
-            Some(config.helper.allowed_gids.clone())
-        }
-        _ => Some(Vec::new()),
+    let allowed_gids = if !config.helper.allowed_gids.is_empty() {
+        info!(
+            "Group-based authentication: allowing GIDs from config: {:?}",
+            config.helper.allowed_gids
+        );
+        Some(config.helper.allowed_gids.clone())
+    } else {
+        Some(Vec::new())
+    };
+
+    // Metrics exporter
+    let _metrics_handle: Option<PrometheusHandle> = if config.metrics.enabled {
+        let addr: SocketAddr = config.metrics.listen_addr.parse().map_err(|e| {
+            anyhow::anyhow!("invalid metrics listen_addr: {}", e)
+        })?;
+        info!("Prometheus metrics endpoint listening on {}", addr);
+        Some(
+            PrometheusBuilder::new()
+                .with_http_listener(addr)
+                .install_recorder()
+                .map_err(|e| anyhow::anyhow!("failed to install Prometheus exporter: {}", e))?,
+        )
+    } else {
+        None
     };
 
     // Create a channel for shutdown signaling

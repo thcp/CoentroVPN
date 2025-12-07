@@ -1,7 +1,7 @@
 // Common QUIC transport helper functions, primarily for TLS configuration.
 
 use crate::transport::TransportError; // Use the new central TransportError
-use rustls;
+use rustls::{self, Certificate, PrivateKey, RootCertStore};
 use std::sync::Arc; // Keep rustls import for types used in signatures
 
 #[cfg(not(feature = "insecure-tls"))]
@@ -16,6 +16,11 @@ fn load_native_roots() -> Result<rustls::RootCertStore, TransportError> {
         )
     }));
     Ok(roots)
+}
+
+#[cfg(feature = "insecure-tls")]
+fn load_native_roots() -> Result<rustls::RootCertStore, TransportError> {
+    Ok(rustls::RootCertStore::empty())
 }
 
 // The old QuicTransport trait, TransportError enum, TransportResult type,
@@ -103,6 +108,51 @@ pub fn configure_client_tls_with_roots(
         .with_no_client_auth();
     client_config.alpn_protocols = vec![b"h3".to_vec()];
     Ok(Arc::new(client_config))
+}
+
+/// Configure client-side TLS with optional pinned roots and client identity (mTLS).
+#[allow(dead_code)]
+pub fn configure_client_tls_with_roots_and_identity(
+    roots: Option<Vec<Certificate>>,
+    identity: Option<(Vec<Certificate>, PrivateKey)>,
+    verify_tls: bool,
+) -> Result<Arc<rustls::ClientConfig>, TransportError> {
+    let root_store = match roots {
+        Some(certs) => build_root_store(certs)?,
+        None => load_native_roots()?,
+    };
+
+    let builder = rustls::ClientConfig::builder().with_safe_defaults();
+    let mut client_config = if let Some((cert_chain, private_key)) = identity {
+        builder
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(cert_chain, private_key)
+            .map_err(|e| TransportError::Tls(format!("invalid client identity: {e}")))? // propagate
+    } else {
+        builder
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    };
+
+    if !verify_tls {
+        client_config
+            .dangerous()
+            .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
+    }
+
+    client_config.alpn_protocols = vec![b"h3".to_vec()];
+    Ok(Arc::new(client_config))
+}
+
+#[allow(dead_code)]
+fn build_root_store(certs: Vec<Certificate>) -> Result<RootCertStore, TransportError> {
+    let mut store = RootCertStore::empty();
+    for cert in certs {
+        store
+            .add(&cert)
+            .map_err(|e| TransportError::Tls(format!("invalid root certificate: {e}")))?;
+    }
+    Ok(store)
 }
 
 /// Contains dangerous TLS configurations, typically for development or testing.

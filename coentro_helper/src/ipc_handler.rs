@@ -9,6 +9,7 @@ use coentro_ipc::messages::{
 };
 use coentro_ipc::transport::{AuthConfig, UnixSocketConnection, UnixSocketListener};
 use governor::{Quota, RateLimiter};
+use metrics::{counter, gauge};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::os::unix::io::RawFd;
@@ -45,6 +46,21 @@ const RATE_LIMIT_REQUESTS: u32 = 30; // Maximum number of requests per client
 const RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds
 const GLOBAL_RATE_LIMIT_CONNECTIONS: u32 = 10; // Maximum number of new connections per minute
 const GLOBAL_RATE_LIMIT_PERIOD: u64 = 60; // Period in seconds for global rate limit
+
+const METRIC_HELPER_ACTIVE_CLIENTS: &str = "coentrovpn_helper_active_clients";
+const METRIC_HELPER_ACTIVE_TUNNELS: &str = "coentrovpn_helper_active_tunnels";
+const METRIC_HELPER_CONNECTIONS_TOTAL: &str = "coentrovpn_helper_connections_total";
+const METRIC_HELPER_TUNNEL_SETUPS_TOTAL: &str = "coentrovpn_helper_tunnel_setups_total";
+const METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL: &str = "coentrovpn_helper_tunnel_teardowns_total";
+
+fn update_client_metrics(active_clients: &HashMap<u32, ClientState>) {
+    gauge!(METRIC_HELPER_ACTIVE_CLIENTS, active_clients.len() as f64);
+    let active_tunnels = active_clients
+        .values()
+        .filter(|c| c.tunnel_active)
+        .count();
+    gauge!(METRIC_HELPER_ACTIVE_TUNNELS, active_tunnels as f64);
+}
 
 /// IPC Handler for the helper daemon
 pub struct IpcHandler {
@@ -459,7 +475,9 @@ impl IpcHandler {
                                         );
                                     }
                                 }
+                                update_client_metrics(&active_clients);
                             }
+                            counter!(METRIC_HELPER_CONNECTIONS_TOTAL, 1, "event" => "accepted");
 
                             // Clone necessary data for the client task
                             let active_clients = Arc::clone(&self.active_clients);
@@ -529,6 +547,7 @@ impl IpcHandler {
                     {
                         let mut active_clients = self.active_clients.lock().unwrap();
                         active_clients.remove(&client_id);
+                        update_client_metrics(&active_clients);
                     }
 
                     // Remove the client task handle
@@ -698,7 +717,9 @@ impl IpcHandler {
                             {
                                 let mut active_clients = self.active_clients.lock().unwrap();
                                 active_clients.insert(client_id, client_state);
+                                update_client_metrics(&active_clients);
                             }
+                            counter!(METRIC_HELPER_CONNECTIONS_TOTAL, 1, "event" => "accepted");
 
                             // Clone necessary data for the client task
                             let active_clients = Arc::clone(&self.active_clients);
@@ -768,6 +789,7 @@ impl IpcHandler {
                     {
                         let mut active_clients = self.active_clients.lock().unwrap();
                         active_clients.remove(&client_id);
+                        update_client_metrics(&active_clients);
                     }
 
                     // Remove the client task handle
@@ -870,6 +892,7 @@ impl IpcHandler {
                 state.tun_fd = Some(tun_details.fd);
                 state.applied_routes = final_routes;
             }
+            update_client_metrics(&active_clients);
         }
 
         // Return the tunnel details with the real file descriptor
@@ -957,6 +980,7 @@ impl IpcHandler {
                 state.current_ip_config = None;
                 state.tun_fd = None;
             }
+            update_client_metrics(&active_clients);
         }
 
         Ok(())
@@ -1112,11 +1136,13 @@ impl IpcHandler {
                                 "Tunnel setup successful for client ID={}: {:?}",
                                 client_id, details
                             );
+                            counter!(METRIC_HELPER_TUNNEL_SETUPS_TOTAL, 1, "status" => "success");
                             HelperResponse::TunnelReady(details)
                         }
                         Err(e) => {
                             // Log the detailed error for debugging
                             error!("Failed to set up tunnel for client ID={}: {}", client_id, e);
+                            counter!(METRIC_HELPER_TUNNEL_SETUPS_TOTAL, 1, "status" => "error");
 
                             // Send a sanitized error message to the client
                             let sanitized_error = Self::sanitize_error_message(&e.to_string());
@@ -1132,6 +1158,7 @@ impl IpcHandler {
                     match IpcHandler::teardown_tunnel(client_id, active_clients.clone()).await {
                         Ok(()) => {
                             debug!("Tunnel teardown successful for client ID={}", client_id);
+                            counter!(METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL, 1, "status" => "success");
                             HelperResponse::Success
                         }
                         Err(e) => {
@@ -1140,6 +1167,7 @@ impl IpcHandler {
                                 "Failed to tear down tunnel for client ID={}: {}",
                                 client_id, e
                             );
+                            counter!(METRIC_HELPER_TUNNEL_TEARDOWNS_TOTAL, 1, "status" => "error");
 
                             // Send a sanitized error message to the client
                             let sanitized_error = Self::sanitize_error_message(&e.to_string());
