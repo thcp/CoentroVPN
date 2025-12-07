@@ -309,9 +309,27 @@ impl NetworkManager for LinuxNetworkManager {
         args.push("dev");
         args.push(interface);
 
-        self.run_command("ip", &args)
-            .await
-            .map_err(|e| NetworkError::Routing(format!("Failed to remove route: {}", e)))?;
+        match self.run_command("ip", &args).await {
+            Ok(_) => {}
+            Err(e) => {
+                let emsg = e.to_string();
+                if emsg.contains("Cannot find device")
+                    || emsg.contains("No such process")
+                    || emsg.contains("No such device")
+                    || emsg.contains("Cannot assign requested address")
+                {
+                    info!(
+                        "Route {} already absent or device missing on {}; treating as success",
+                        destination, interface
+                    );
+                } else {
+                    return Err(NetworkError::Routing(format!(
+                        "Failed to remove route: {}",
+                        e
+                    )));
+                }
+            }
+        }
 
         Ok(())
     }
