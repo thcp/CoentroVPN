@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 // Import platform-specific implementations
+#[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "linux")]
 use linux::LinuxNetworkManager;
@@ -51,6 +53,7 @@ pub enum NetworkError {
 
     /// Other error
     #[error("Other error: {0}")]
+    #[allow(dead_code)]
     Other(String),
 }
 

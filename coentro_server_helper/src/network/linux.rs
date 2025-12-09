@@ -6,9 +6,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::ErrorKind;
-use std::net::IpAddr;
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
-use std::os::unix::io::AsRawFd;
 use tokio::fs;
 use tokio::process::Command as TokioCommand;
 use tokio::sync::Mutex as AsyncMutex;
@@ -212,65 +210,6 @@ impl LinuxInterfaceManager {
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
     }
-}
-
-#[async_trait]
-impl InterfaceManager for LinuxInterfaceManager {
-    async fn ensure_forwarding(&self) -> InterfaceResult<()> {
-        let touched_ipv4 = Self::ensure_sysctl(SYSCTL_IPV4_FORWARD).await?;
-        if let Some(path) = touched_ipv4 {
-            info!(path, "enabled IPv4 forwarding");
-        }
-
-        let touched_ipv6 = Self::ensure_sysctl(SYSCTL_IPV6_FORWARD).await?;
-        if let Some(path) = touched_ipv6 {
-            info!(path, "enabled IPv6 forwarding");
-        }
-
-        Ok(())
-    }
-
-    async fn ensure_tun(&self, config: &TunConfig) -> InterfaceResult<TunDescriptor> {
-        let name = self.choose_name(config).await?;
-
-        self.destroy_interface(&name).await?;
-
-        let mut tun_config = Configuration::default();
-        tun_config.layer(Layer::L3);
-        tun_config.mtu(config.mtu as i32);
-        tun_config.up();
-        tun_config.platform(|platform| {
-            platform.packet_information(false);
-        });
-        tun_config.name(&name);
-
-        let device = tun::create(&tun_config).map_err(|e| {
-            InterfaceError::Platform(format!("failed to create TUN device {name}: {e}"))
-        })?;
-
-        let fd = unsafe { OwnedFd::from_raw_fd(device.into_raw_fd()) };
-        self.configure_interface(&name, config).await?;
-
-        Ok(TunDescriptor {
-            name,
-            fd,
-            mtu: config.mtu,
-            ipv4_cidr: config.ipv4_cidr.clone(),
-            sysctl_touched: None,
-        })
-    }
-
-    async fn teardown_tun(&self, name: &str) -> InterfaceResult<()> {
-        self.destroy_interface(name).await
-    }
-
-    async fn cleanup_stale_interfaces(&self, prefix: &str) -> InterfaceResult<()> {
-        let candidates = Self::cleanup_dir(prefix).await?;
-        for iface in candidates {
-            self.destroy_interface(&iface).await?;
-        }
-        Ok(())
-    }
 
     async fn apply_routes(
         &self,
@@ -429,6 +368,65 @@ impl InterfaceManager for LinuxInterfaceManager {
                 }
                 _ => {}
             }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl InterfaceManager for LinuxInterfaceManager {
+    async fn ensure_forwarding(&self) -> InterfaceResult<()> {
+        let touched_ipv4 = Self::ensure_sysctl(SYSCTL_IPV4_FORWARD).await?;
+        if let Some(path) = touched_ipv4 {
+            info!(path, "enabled IPv4 forwarding");
+        }
+
+        let touched_ipv6 = Self::ensure_sysctl(SYSCTL_IPV6_FORWARD).await?;
+        if let Some(path) = touched_ipv6 {
+            info!(path, "enabled IPv6 forwarding");
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_tun(&self, config: &TunConfig) -> InterfaceResult<TunDescriptor> {
+        let name = self.choose_name(config).await?;
+
+        self.destroy_interface(&name).await?;
+
+        let mut tun_config = Configuration::default();
+        tun_config.layer(Layer::L3);
+        tun_config.mtu(config.mtu as i32);
+        tun_config.up();
+        tun_config.platform(|platform| {
+            platform.packet_information(false);
+        });
+        tun_config.name(&name);
+
+        let device = tun::create(&tun_config).map_err(|e| {
+            InterfaceError::Platform(format!("failed to create TUN device {name}: {e}"))
+        })?;
+
+        let fd = unsafe { OwnedFd::from_raw_fd(device.into_raw_fd()) };
+        self.configure_interface(&name, config).await?;
+
+        Ok(TunDescriptor {
+            name,
+            fd,
+            mtu: config.mtu,
+            ipv4_cidr: config.ipv4_cidr.clone(),
+            sysctl_touched: None,
+        })
+    }
+
+    async fn teardown_tun(&self, name: &str) -> InterfaceResult<()> {
+        self.destroy_interface(name).await
+    }
+
+    async fn cleanup_stale_interfaces(&self, prefix: &str) -> InterfaceResult<()> {
+        let candidates = Self::cleanup_dir(prefix).await?;
+        for iface in candidates {
+            self.destroy_interface(&iface).await?;
         }
         Ok(())
     }
