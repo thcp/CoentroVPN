@@ -94,3 +94,73 @@ jobs:
           if [ -f package.json ] && grep -q '"test"' package.json; then
             npm run test
           fi
+
+  rust-checks-linux:
+    name: Rust Checks (Linux + TUN)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.87.0
+          override: true
+          components: rustfmt, clippy
+
+      - name: Create TUN device
+        run: |
+          sudo ip netns add tun-ns
+          sudo ip tuntap add dev coentro0 mode tun
+          sudo ip link set coentro0 netns tun-ns
+          sudo ip netns exec tun-ns ip addr add 10.8.0.1/30 dev coentro0
+          sudo ip netns exec tun-ns ip link set lo up
+          sudo ip netns exec tun-ns ip link set coentro0 up
+
+      - name: Check formatting
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Lint with clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all-targets --all-features -- -D warnings
+
+      - name: Build Rust workspace
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --workspace
+
+      - name: Run unit tests (client bin in netns)
+        run: sudo -E ip netns exec tun-ns bash -lc "export PATH=\"$HOME/.cargo/bin:$PATH\"; cd \"$GITHUB_WORKSPACE\" && cargo test -p coentro_client"
+        env:
+          CARGO_TARGET_DIR: target
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+
+      - name: Run helper tests (netns)
+        run: sudo -E ip netns exec tun-ns bash -lc "export PATH=\"$HOME/.cargo/bin:$PATH\"; cd \"$GITHUB_WORKSPACE\" && cargo test -p coentro_helper --tests"
+        env:
+          CARGO_TARGET_DIR: target
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+
+      - name: Cleanup TUN device
+        if: always()
+        run: |
+          sudo ip netns del tun-ns || true

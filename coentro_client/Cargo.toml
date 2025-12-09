@@ -20,3 +20,8 @@ rustls-pemfile = "1.0"
 rustls = "0.21.12"
 metrics = "0.21"
 metrics-exporter-prometheus = "0.14"
+
+[features]
+default = ["tun-metrics"]
+# Gate TUN edge metrics so they can be disabled for minimal builds.
+tun-metrics = []

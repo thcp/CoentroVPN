@@ -15,6 +15,12 @@ use std::ptr;
 use tokio::process::Command as TokioCommand;
 use tracing::{debug, error, info, warn};
 
+impl Default for MacOsNetworkManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// macOS Network Manager
 #[derive(Debug)]
 pub struct MacOsNetworkManager {
@@ -250,14 +256,24 @@ impl MacOsNetworkManager {
         info!("Interface configuration: {}", output);
 
         // Check if the IP address was configured correctly
-        if !output.contains(ip_address) {
+        let mtu_token = format!("mtu {}", mtu);
+        let missing_ip = !output.contains(ip_address);
+        let missing_mtu = !output.contains(&mtu_token);
+        if missing_ip || missing_mtu {
+            let mut reasons = Vec::new();
+            if missing_ip {
+                reasons.push("ip");
+            }
+            if missing_mtu {
+                reasons.push("mtu");
+            }
             warn!(
-                "IP address {} not found in interface configuration",
-                ip_address
+                "Interface {} missing {:?} after configuration",
+                interface_name, reasons
             );
             return Err(NetworkError::TunDevice(format!(
-                "Failed to configure IP address for {}: IP address not found in interface configuration",
-                interface_name
+                "Failed to configure {}: missing {:?} in interface configuration output",
+                interface_name, reasons
             )));
         }
 
@@ -471,6 +487,28 @@ impl NetworkManager for MacOsNetworkManager {
     async fn destroy_tun(&self, name: &str) -> NetworkResult<()> {
         info!("Destroying TUN interface: {}", name);
 
+        // Attempt to drop any configured addresses; ignore if none are present
+        if let Err(e) = Self::run_command(
+            "ifconfig",
+            &[name, "-alias", "0.0.0.0"],
+            &format!("Failed to clear IP aliases on {}", name),
+        )
+        .await
+        {
+            let emsg = e.to_string();
+            if emsg.contains("Cannot assign requested address")
+                || emsg.contains("not found")
+                || emsg.contains("does not exist")
+            {
+                info!(
+                    "Interface {} had no aliases to clear; continuing teardown",
+                    name
+                );
+            } else {
+                warn!("Error clearing aliases on {}: {}", name, emsg);
+            }
+        }
+
         // On macOS, we can just bring the interface down
         match Self::run_command(
             "ifconfig",
@@ -602,6 +640,49 @@ impl NetworkManager for MacOsNetworkManager {
             destination, gateway, interface
         );
 
+        // Default route handling: remove both default and split-default to stay idempotent
+        if gateway.is_none() && (destination == "0.0.0.0/0" || destination == "default") {
+            let targets = [
+                (
+                    "default",
+                    vec!["-n", "delete", "-inet", "default", "-interface", interface],
+                ),
+                (
+                    "0.0.0.0/1",
+                    vec!["-n", "delete", "-net", "0.0.0.0/1", "-interface", interface],
+                ),
+                (
+                    "128.0.0.0/1",
+                    vec![
+                        "-n",
+                        "delete",
+                        "-net",
+                        "128.0.0.0/1",
+                        "-interface",
+                        interface,
+                    ],
+                ),
+            ];
+
+            for (label, args) in targets {
+                if let Err(e) = Self::run_command("route", &args, "Failed to remove route").await {
+                    let emsg = e.to_string();
+                    if emsg.contains("not in table")
+                        || emsg.contains("not found")
+                        || emsg.contains("No such")
+                    {
+                        info!("Route {} already absent; continuing", label);
+                        continue;
+                    }
+                    return Err(NetworkError::Routing(format!(
+                        "Failed to remove {} route: {}",
+                        label, e
+                    )));
+                }
+            }
+            return Ok(());
+        }
+
         // Build the command arguments
         let mut args = vec!["-n", "delete", "-net", destination];
 
@@ -613,12 +694,24 @@ impl NetworkManager for MacOsNetworkManager {
         }
 
         // Run the route command
-        Self::run_command(
+        let res = Self::run_command(
             "route",
             &args,
             &format!("Failed to remove route to {}", destination),
         )
-        .await?;
+        .await;
+
+        if let Err(e) = res {
+            let emsg = e.to_string();
+            if emsg.contains("not in table")
+                || emsg.contains("not found")
+                || emsg.contains("No such")
+            {
+                info!("Route {} already absent; treating as success", destination);
+            } else {
+                return Err(e);
+            }
+        }
 
         Ok(())
     }

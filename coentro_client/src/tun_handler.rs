@@ -4,6 +4,8 @@
 //! It reads packets from the TUN interface and forwards them to the QUIC tunnel,
 //! and vice versa.
 
+#[cfg(feature = "tun-metrics")]
+use metrics::{counter, histogram};
 use shared_utils::transport::Connection as TransportConnection;
 use std::io::{self, Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
@@ -13,8 +15,27 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-/// Maximum packet size for TUN interface
+/// Maximum packet size for TUN interface (hard cap)
 const MAX_PACKET_SIZE: usize = 1500;
+/// Minimum packet size we'll allow for MTU clamping
+const MIN_PACKET_SIZE: usize = 576;
+
+#[cfg(feature = "tun-metrics")]
+const METRIC_TUN_BYTES: &str = "coentrovpn_client_tun_bytes_total";
+#[cfg(feature = "tun-metrics")]
+const METRIC_TUN_PACKETS: &str = "coentrovpn_client_tun_packets_total";
+#[cfg(feature = "tun-metrics")]
+const METRIC_TUN_PACKET_SIZE: &str = "coentrovpn_client_tun_packet_size_bytes";
+
+#[cfg(feature = "tun-metrics")]
+fn record_packet_metrics(direction: &'static str, len: usize) {
+    counter!(METRIC_TUN_PACKETS, 1, "direction" => direction);
+    counter!(METRIC_TUN_BYTES, len as u64, "direction" => direction);
+    histogram!(METRIC_TUN_PACKET_SIZE, len as f64, "direction" => direction);
+}
+
+#[cfg(not(feature = "tun-metrics"))]
+fn record_packet_metrics(_direction: &'static str, _len: usize) {}
 
 /// TUN interface handler
 #[allow(dead_code)]
@@ -64,6 +85,12 @@ impl TunHandler {
         self.mtu
     }
 
+    /// Bounded maximum frame size used for buffers and validation
+    fn max_frame_len(&self) -> usize {
+        let mtu = self.mtu as usize;
+        mtu.clamp(MIN_PACKET_SIZE, MAX_PACKET_SIZE)
+    }
+
     /// Create packet channels for communication with the QUIC tunnel
     pub fn create_packet_channels(
         &mut self,
@@ -91,6 +118,8 @@ impl TunHandler {
         // Get the packet channels
         let packet_tx = self.packet_tx.take().unwrap();
         let mut packet_rx = self.packet_rx.take().unwrap();
+        let max_frame = self.max_frame_len();
+        let iface_name = self.interface_name.clone();
 
         // Create a file from the TUN file descriptor
         let tun_file = unsafe { std::fs::File::from_raw_fd(self.tun_fd) };
@@ -98,10 +127,11 @@ impl TunHandler {
 
         // Clone for the read task
         let tun_file_read = Arc::clone(&tun_file);
+        let read_iface = iface_name.clone();
 
         // Spawn a task to read from the TUN interface and send to the QUIC tunnel
         let read_task = tokio::spawn(async move {
-            let mut buffer = vec![0u8; MAX_PACKET_SIZE];
+            let mut buffer = vec![0u8; max_frame];
             loop {
                 // Read from the TUN interface
                 let n = {
@@ -121,11 +151,16 @@ impl TunHandler {
                 }
 
                 debug!("Read {} bytes from TUN interface", n);
+                record_packet_metrics("tun_to_transport", n);
 
                 // Send the packet to the QUIC tunnel
                 let packet = buffer[..n].to_vec();
                 if let Err(e) = packet_tx.send(packet).await {
-                    error!("Error sending packet to QUIC tunnel: {}", e);
+                    error!(
+                        iface = %read_iface,
+                        "Error sending packet to QUIC tunnel: {}",
+                        e
+                    );
                     break;
                 }
             }
@@ -135,6 +170,17 @@ impl TunHandler {
         let write_task = tokio::spawn(async move {
             while let Some(packet) = packet_rx.recv().await {
                 debug!("Received {} bytes from QUIC tunnel", packet.len());
+
+                if packet.len() > max_frame {
+                    warn!(
+                        iface = %iface_name,
+                        size = packet.len(),
+                        max = max_frame,
+                        "Dropping oversize packet headed to TUN"
+                    );
+                    continue;
+                }
+                record_packet_metrics("transport_to_tun", packet.len());
 
                 // Write to the TUN interface
                 let result = {
@@ -182,6 +228,7 @@ pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
     processor: Arc<P>,
     buffer_size: usize,
 ) -> io::Result<()> {
+    let max_frame = tun_handler.max_frame_len();
     // Create packet channels
     let (quic_to_tun_tx, mut tun_to_quic_rx) = tun_handler.create_packet_channels(buffer_size);
 
@@ -199,7 +246,7 @@ pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
     // Spawn a task to read from the QUIC tunnel and send to the TUN interface
     let processor_clone = Arc::clone(&processor);
     let quic_read_task = tokio::spawn(async move {
-        let mut buffer = vec![0u8; MAX_PACKET_SIZE];
+        let mut buffer = vec![0u8; max_frame];
         loop {
             // Read the packet length
             let mut len_bytes = [0u8; 2];
@@ -213,9 +260,15 @@ pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
             }
 
             let packet_len = u16::from_be_bytes(len_bytes) as usize;
-            if packet_len == 0 || packet_len > MAX_PACKET_SIZE {
-                error!("Invalid packet length: {}", packet_len);
-                break;
+            if packet_len == 0 || packet_len > max_frame {
+                warn!(
+                    "Dropping oversize or empty packet from QUIC (len={}, max={})",
+                    packet_len, max_frame
+                );
+                // Drain the body to keep stream in sync without allocating unbounded memory
+                let mut discard = (&mut quic_reader).take(packet_len as u64);
+                let _ = tokio::io::copy(&mut discard, &mut tokio::io::sink()).await;
+                continue;
             }
 
             // Read the packet
@@ -238,6 +291,15 @@ pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
                 }
             };
 
+            if processed_packet.len() > max_frame {
+                warn!(
+                    size = processed_packet.len(),
+                    max = max_frame,
+                    "Dropping processed QUIC packet larger than max frame"
+                );
+                continue;
+            }
+
             // Send the packet to the TUN interface
             if let Err(e) = quic_to_tun_tx.send(processed_packet).await {
                 error!("Error sending packet to TUN interface: {}", e);
@@ -259,6 +321,15 @@ pub async fn start_tun_quic_tunnel<P: PacketProcessor + 'static>(
                     continue;
                 }
             };
+
+            if processed_packet.len() > max_frame {
+                warn!(
+                    size = processed_packet.len(),
+                    max = max_frame,
+                    "Dropping TUN packet larger than max frame for QUIC stream"
+                );
+                continue;
+            }
 
             // Write the packet length
             let packet_len = processed_packet.len() as u16;
@@ -318,6 +389,8 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
     processor: Arc<P>,
     buffer_size: usize,
 ) -> io::Result<BridgeHandle> {
+    let max_frame = tun_handler.max_frame_len();
+    let iface_label = tun_handler.interface_name().to_string();
     // Create packet channels
     let (quic_to_tun_tx, mut tun_to_quic_rx) = tun_handler.create_packet_channels(buffer_size);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -336,6 +409,8 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
     let connection_arc = Arc::new(Mutex::new(connection));
     let conn_reader = Arc::clone(&connection_arc);
     let mut read_shutdown = shutdown_tx.subscribe();
+    let max_frame_from_transport = max_frame;
+    let iface_from_transport = iface_label.clone();
     let read_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -350,6 +425,15 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
                     match result {
                         Ok(Some(data)) => {
                             debug!("Transport->TUN received {} bytes", data.len());
+                            if data.len() > max_frame_from_transport {
+                                warn!(
+                                    iface = %iface_from_transport,
+                                    size = data.len(),
+                                    max = max_frame_from_transport,
+                                    "Dropping oversize packet from transport before TUN"
+                                );
+                                continue;
+                            }
                             match processor_clone.process_quic_to_tun(&data).await {
                                 Ok(pkt) => {
                                     if let Err(e) = quic_to_tun_tx.send(pkt).await {
@@ -379,6 +463,8 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
     // Task: read from TUN and send to transport
     let conn_writer = Arc::clone(&connection_arc);
     let mut write_shutdown = shutdown_tx.subscribe();
+    let max_frame_to_transport = max_frame;
+    let iface_to_transport = iface_label;
     let write_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -389,6 +475,15 @@ pub async fn start_tun_transport_bridge<P: PacketProcessor + 'static>(
                 maybe_packet = tun_to_quic_rx.recv() => {
                     let Some(packet) = maybe_packet else { break; };
                     debug!("TUN->Transport sending {} bytes", packet.len());
+                    if packet.len() > max_frame_to_transport {
+                        warn!(
+                            iface = %iface_to_transport,
+                            size = packet.len(),
+                            max = max_frame_to_transport,
+                            "Dropping oversize packet from TUN before transport send"
+                        );
+                        continue;
+                    }
                     match processor.process_tun_to_quic(&packet).await {
                         Ok(pkt) => {
                             let mut conn = conn_writer.lock().await;
