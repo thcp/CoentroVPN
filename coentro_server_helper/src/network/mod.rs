@@ -31,6 +31,7 @@ pub enum InterfaceError {
     Io(#[from] std::io::Error),
 
     #[error("Invalid configuration: {0}")]
+    #[allow(dead_code)]
     InvalidConfig(String),
 
     #[error("System command `{command}` failed: {stderr}")]
