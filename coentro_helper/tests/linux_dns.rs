@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use coentro_helper::network_manager::{create_network_manager, TunConfig};
+use coentro_helper::network_manager::create_network_manager;
 use std::fs;
 use tempfile::tempdir;
 
