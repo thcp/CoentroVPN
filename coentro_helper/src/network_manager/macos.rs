@@ -15,6 +15,12 @@ use std::ptr;
 use tokio::process::Command as TokioCommand;
 use tracing::{debug, error, info, warn};
 
+impl Default for MacOsNetworkManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// macOS Network Manager
 #[derive(Debug)]
 pub struct MacOsNetworkManager {
