@@ -343,7 +343,7 @@ impl LinuxInterfaceManager {
         let mut guard = self.dns_state.lock().await;
         let state = guard.remove(interface);
         drop(guard);
-        let source = record.cloned().or_else(|| match state {
+        let source = record.cloned().or(match state {
             Some(LinuxDnsState::Resolvectl) => Some(DnsRollback::LinuxResolvectl),
             Some(LinuxDnsState::ResolvConf { original }) => {
                 Some(DnsRollback::LinuxResolvConf { original })
