@@ -9,10 +9,7 @@ async fn dns_configure_and_restore_uses_override_path() -> anyhow::Result<()> {
     // Prepare temp resolv.conf
     let dir = tempdir()?;
     let resolv_path = dir.path().join("resolv.conf");
-    fs::write(
-        &resolv_path,
-        "nameserver 8.8.8.8\nnameserver 1.1.1.1\n",
-    )?;
+    fs::write(&resolv_path, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n")?;
     std::env::set_var(
         "COENTROVPN_LINUX_RESOLV_CONF",
         resolv_path.to_string_lossy().to_string(),

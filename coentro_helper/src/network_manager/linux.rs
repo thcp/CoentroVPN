@@ -5,8 +5,8 @@
 use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 use std::os::unix::io::AsRawFd;
+use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use tokio::process::Command as TokioCommand;

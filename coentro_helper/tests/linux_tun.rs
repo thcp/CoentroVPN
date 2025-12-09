@@ -31,7 +31,10 @@ async fn create_route_destroy_tun() -> anyhow::Result<()> {
 
     // Verify link exists and MTU set
     let link_info = ip_cmd(&["link", "show", "dev", &name])?;
-    assert!(link_info.contains("mtu 1400"), "mtu not applied: {link_info}");
+    assert!(
+        link_info.contains("mtu 1400"),
+        "mtu not applied: {link_info}"
+    );
 
     // Verify address is configured
     let addr_info = ip_cmd(&["-4", "addr", "show", "dev", &name])?;
@@ -47,8 +50,7 @@ async fn create_route_destroy_tun() -> anyhow::Result<()> {
         routes.contains("203.0.113.0/24"),
         "route not present: {routes}"
     );
-    mgr.remove_route("203.0.113.0/24", None, &tun.name)
-        .await?;
+    mgr.remove_route("203.0.113.0/24", None, &tun.name).await?;
 
     // Destroy TUN and ensure link is gone
     mgr.destroy_tun(&tun.name).await?;
