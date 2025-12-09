@@ -151,6 +151,11 @@ jobs:
         env:
           CARGO_TARGET_DIR: target
 
+      - name: Run helper tests (netns)
+        run: sudo ip netns exec tun-ns bash -lc "cd $GITHUB_WORKSPACE && cargo test -p coentro_helper --tests"
+        env:
+          CARGO_TARGET_DIR: target
+
       - name: Cleanup TUN device
         if: always()
         run: |

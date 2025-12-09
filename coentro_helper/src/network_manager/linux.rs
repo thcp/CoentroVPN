@@ -5,6 +5,7 @@
 use super::{NetworkError, NetworkManager, NetworkResult, TunConfig, TunDetails};
 use async_trait::async_trait;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::os::unix::io::AsRawFd;
 use std::process::Command;
 use std::str::FromStr;
@@ -18,15 +19,21 @@ pub struct LinuxNetworkManager {
     original_dns: Option<Vec<String>>,
     /// TUN device name, used to track the active TUN device
     tun_name: Option<String>,
+    /// Path to resolv.conf (overrideable for tests)
+    resolv_conf_path: PathBuf,
 }
 
 impl LinuxNetworkManager {
     /// Create a new Linux Network Manager
     #[allow(dead_code)]
     pub fn new() -> Self {
+        let resolv_conf_path = std::env::var("COENTROVPN_LINUX_RESOLV_CONF")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/etc/resolv.conf"));
         Self {
             original_dns: None,
             tun_name: None,
+            resolv_conf_path,
         }
     }
 
@@ -370,16 +377,15 @@ impl NetworkManager for LinuxNetworkManager {
             }
         }
 
-        // Fallback: Save original and write /etc/resolv.conf (non-systemd-resolved)
+        // Fallback: Save original and write resolv.conf (non-systemd-resolved)
         if self.original_dns.is_none() {
-            let output = Command::new("cat")
-                .arg("/etc/resolv.conf")
-                .output()
-                .map_err(|e| {
-                    NetworkError::DnsConfig(format!("Failed to read /etc/resolv.conf: {}", e))
-                })?;
-
-            let content = String::from_utf8_lossy(&output.stdout);
+            let content = std::fs::read_to_string(&self.resolv_conf_path).map_err(|e| {
+                NetworkError::DnsConfig(format!(
+                    "Failed to read {}: {}",
+                    self.resolv_conf_path.display(),
+                    e
+                ))
+            })?;
             let mut dns_servers = Vec::new();
 
             for line in content.lines() {
@@ -404,8 +410,12 @@ impl NetworkManager for LinuxNetworkManager {
         for server in servers {
             content.push_str(&format!("nameserver {}\n", server));
         }
-        std::fs::write("/etc/resolv.conf", content).map_err(|e| {
-            NetworkError::DnsConfig(format!("Failed to write /etc/resolv.conf: {}", e))
+        std::fs::write(&self.resolv_conf_path, content).map_err(|e| {
+            NetworkError::DnsConfig(format!(
+                "Failed to write {}: {}",
+                self.resolv_conf_path.display(),
+                e
+            ))
         })?;
 
         Ok(())
@@ -433,8 +443,12 @@ impl NetworkManager for LinuxNetworkManager {
             for server in servers {
                 content.push_str(&format!("nameserver {}\n", server));
             }
-            std::fs::write("/etc/resolv.conf", content).map_err(|e| {
-                NetworkError::DnsConfig(format!("Failed to write /etc/resolv.conf: {}", e))
+            std::fs::write(&self.resolv_conf_path, content).map_err(|e| {
+                NetworkError::DnsConfig(format!(
+                    "Failed to write {}: {}",
+                    self.resolv_conf_path.display(),
+                    e
+                ))
             })?;
 
             let this = self as *const _ as *mut Self;
