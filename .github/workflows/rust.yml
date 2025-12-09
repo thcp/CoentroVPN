@@ -147,14 +147,18 @@ jobs:
           args: --workspace
 
       - name: Run unit tests (client bin in netns)
-        run: sudo ip netns exec tun-ns bash -lc "cd $GITHUB_WORKSPACE && cargo test -p coentro_client"
+        run: sudo -E ip netns exec tun-ns bash -lc "export PATH=\"$HOME/.cargo/bin:$PATH\"; cd \"$GITHUB_WORKSPACE\" && cargo test -p coentro_client"
         env:
           CARGO_TARGET_DIR: target
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
 
       - name: Run helper tests (netns)
-        run: sudo ip netns exec tun-ns bash -lc "cd $GITHUB_WORKSPACE && cargo test -p coentro_helper --tests"
+        run: sudo -E ip netns exec tun-ns bash -lc "export PATH=\"$HOME/.cargo/bin:$PATH\"; cd \"$GITHUB_WORKSPACE\" && cargo test -p coentro_helper --tests"
         env:
           CARGO_TARGET_DIR: target
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
 
       - name: Cleanup TUN device
         if: always()
