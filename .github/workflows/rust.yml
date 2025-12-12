@@ -160,6 +160,20 @@ jobs:
           CARGO_HOME: /home/runner/.cargo
           RUSTUP_HOME: /home/runner/.rustup
 
+      - name: Run shared_utils tests (simulation/fuzz targets)
+        run: cargo test -p shared_utils
+        env:
+          CARGO_TARGET_DIR: target
+
+      - name: Fuzz smoke (framing)
+        run: |
+          rustup toolchain install nightly --no-self-update --profile minimal
+          cargo install cargo-fuzz --version 0.12.0
+          cd shared_utils
+          cargo +nightly fuzz run framing -- -runs=1000 -detect_leaks=0
+        env:
+          CARGO_TARGET_DIR: /home/runner/.cargo/fuzz-target
+
       - name: Cleanup TUN device
         if: always()
         run: |

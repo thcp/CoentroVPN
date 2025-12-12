@@ -539,6 +539,8 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use metrics_exporter_prometheus::PrometheusBuilder;
+    use std::sync::OnceLock;
     use tokio::sync::{Mutex, mpsc};
 
     #[test]
@@ -619,6 +621,17 @@ mod tests {
         }
     }
 
+    fn ensure_metrics_recorder() -> metrics_exporter_prometheus::PrometheusHandle {
+        static HANDLE: OnceLock<metrics_exporter_prometheus::PrometheusHandle> = OnceLock::new();
+        HANDLE
+            .get_or_init(|| {
+                PrometheusBuilder::new()
+                    .install_recorder()
+                    .expect("install recorder")
+            })
+            .clone()
+    }
+
     #[async_trait]
     impl Connection for InMemoryConn {
         async fn send_data(&mut self, data: &[u8]) -> Result<(), TransportError> {
@@ -667,5 +680,75 @@ mod tests {
             server_res,
             Err(TransportError::Protocol(msg)) if msg.contains("replayed")
         ));
+    }
+
+    #[tokio::test]
+    async fn rejects_stale_challenge() {
+        let (mut server_conn, mut client_conn) = InMemoryConn::pair();
+        let server_cfg = ServerAuthConfig {
+            challenge_ttl: Duration::from_millis(1),
+            metrics: None,
+            replay_cache: None,
+        };
+        let server = tokio::spawn(async move {
+            // Intentionally sleep inside to force staleness
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            psk_handshake_server_with_config(&mut server_conn, || parse_psk("YWFh"), &server_cfg)
+                .await
+        });
+
+        // Client runs immediately; server delay makes challenge stale by verification
+        let client_res = psk_handshake_client(&mut client_conn, "YWFh").await;
+        assert!(matches!(
+            client_res,
+            Err(TransportError::Protocol(msg)) if msg.contains("stale")
+        ));
+
+        let server_res = server.await.expect("server task panicked");
+        assert!(matches!(
+            server_res,
+            Err(TransportError::Protocol(msg)) if msg.contains("stale")
+        ));
+    }
+
+    #[tokio::test]
+    async fn replay_cache_persistence_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("replay.bin");
+        let ttl = Duration::from_secs(60);
+        {
+            let cache = PersistentReplayCache::new(&path, 8, ttl);
+            let nonce = b"nonce-1";
+            assert!(cache.register(nonce, ttl));
+            // second register should fail
+            assert!(!cache.register(nonce, ttl));
+        }
+
+        // Re-create cache; it should load the persisted nonce and reject reuse
+        let cache = PersistentReplayCache::new(&path, 8, ttl);
+        assert!(!cache.register(b"nonce-1", ttl));
+        // new nonce still accepted
+        assert!(cache.register(b"nonce-2", ttl));
+    }
+
+    #[tokio::test]
+    async fn replay_counter_metric_increments() {
+        let handle = ensure_metrics_recorder();
+        let (mut server_conn, mut client_conn) = InMemoryConn::pair();
+        let server_cfg = ServerAuthConfig::new(DEFAULT_CHALLENGE_TTL)
+            .with_replay_cache(Arc::new(DenyReplayCache));
+        let server = tokio::spawn(async move {
+            psk_handshake_server_with_config(&mut server_conn, || parse_psk("YWFh"), &server_cfg)
+                .await
+        });
+
+        let _ = psk_handshake_client(&mut client_conn, "YWFh").await;
+        let _ = server.await;
+
+        let metrics = handle.render();
+        assert!(
+            metrics.contains("coentrovpn_auth_replay_reject_total"),
+            "replay metric missing: {metrics}"
+        );
     }
 }

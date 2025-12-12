@@ -1,0 +1,24 @@
+[package]
+name = "shared_utils-fuzz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shared_utils = { path = ".." }
+
+[build-dependencies]
+shared_utils = { path = ".." }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "framing"
+path = "fuzz_targets/framing.rs"
+test = false
+doc = false

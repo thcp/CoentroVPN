@@ -299,4 +299,34 @@ mod tests {
             last_counter_val = Some(current_counter_val);
         }
     }
+
+    #[test]
+    fn replayed_ciphertext_is_rejected() {
+        let key = AesGcmCipher::generate_key();
+        let cipher = AesGcmCipher::new(&key).unwrap();
+        let plaintext = b"replay-test-payload";
+
+        let ct = cipher.encrypt(plaintext).expect("encrypt");
+
+        let pt1 = cipher.decrypt(&ct).expect("first decrypt should work");
+        assert_eq!(pt1, plaintext);
+
+        let res = cipher.decrypt(&ct);
+        assert!(res.is_err(), "replayed ciphertext unexpectedly succeeded");
+    }
+
+    #[test]
+    fn ciphertext_from_other_key_fails() {
+        let key_a = AesGcmCipher::generate_key();
+        let key_b = AesGcmCipher::generate_key();
+
+        let cipher_a = AesGcmCipher::new(&key_a).unwrap();
+        let cipher_b = AesGcmCipher::new(&key_b).unwrap();
+
+        let plaintext = b"cross-key-payload";
+        let ct = cipher_a.encrypt(plaintext).expect("encrypt");
+
+        let res = cipher_b.decrypt(&ct);
+        assert!(res.is_err(), "ciphertext decrypted with wrong key");
+    }
 }

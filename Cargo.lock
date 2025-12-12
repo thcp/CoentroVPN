@@ -2257,6 +2257,7 @@ dependencies = [
  "hex",
  "hmac",
  "metrics 0.21.1",
+ "metrics-exporter-prometheus",
  "proptest",
  "quinn",
  "rand 0.8.5",
