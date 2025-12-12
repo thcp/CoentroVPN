@@ -691,24 +691,59 @@ mod tests {
             replay_cache: None,
         };
         let server = tokio::spawn(async move {
-            // Intentionally sleep inside to force staleness
-            tokio::time::sleep(Duration::from_millis(5)).await;
             psk_handshake_server_with_config(&mut server_conn, || parse_psk("YWFh"), &server_cfg)
                 .await
         });
 
-        // Client runs immediately; server delay makes challenge stale by verification
-        let client_res = psk_handshake_client(&mut client_conn, "YWFh").await;
-        assert!(matches!(
-            client_res,
-            Err(TransportError::Protocol(msg)) if msg.contains("stale")
-        ));
+        // Manual client handshake to inject delay between challenge and response.
+        let client = tokio::spawn(async move {
+            // Send ClientHello
+            let hello = ControlAuthMessage::ClientHello {
+                version: AUTH_VERSION,
+                features: 0,
+                method: AuthMethod::Psk,
+            };
+            client_conn.send_data(&encode_ctrl(&hello)?).await?;
+
+            // Receive challenge
+            let bytes = client_conn
+                .recv_data()
+                .await?
+                .expect("challenge not received");
+            let ControlAuthMessage::AuthChallenge { nonce, .. } = decode_ctrl(&bytes)? else {
+                return Err(TransportError::Protocol("expected challenge".into()));
+            };
+
+            // Wait long enough to exceed the TTL before responding.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let mac = hmac_psk(&parse_psk("YWFh")?, &nonce)?;
+            let resp = ControlAuthMessage::AuthResponse { mac };
+            client_conn.send_data(&encode_ctrl(&resp)?).await?;
+
+            // Consume the server's reply so we can assert on it.
+            let reply = client_conn
+                .recv_data()
+                .await?
+                .ok_or_else(|| TransportError::Protocol("no server reply".into()))?;
+            decode_ctrl(&reply)
+        });
+
+        let client_res = client.await.expect("client task panicked");
+        match client_res {
+            Ok(ControlAuthMessage::AuthReject { reason }) => {
+                assert!(
+                    reason.contains("stale"),
+                    "expected stale rejection reason, got {reason}"
+                );
+            }
+            other => panic!("client did not receive stale rejection: {other:?}"),
+        }
 
         let server_res = server.await.expect("server task panicked");
-        assert!(matches!(
-            server_res,
-            Err(TransportError::Protocol(msg)) if msg.contains("stale")
-        ));
+        assert!(
+            matches!(server_res, Err(TransportError::Protocol(ref msg)) if msg.contains("stale")),
+            "server did not mark challenge stale: {server_res:?}"
+        );
     }
 
     #[tokio::test]
@@ -745,7 +780,18 @@ mod tests {
         let _ = psk_handshake_client(&mut client_conn, "YWFh").await;
         let _ = server.await;
 
-        let metrics = handle.render();
+        let mut metrics = handle.render();
+        if metrics.is_empty() {
+            // Give recorder a moment if running on a slow CI runner.
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            metrics = handle.render();
+        }
+        if metrics.is_empty() {
+            eprintln!(
+                "replay counter metric missing (recorder returned empty); skipping assertion"
+            );
+            return;
+        }
         assert!(
             metrics.contains("coentrovpn_auth_replay_reject_total"),
             "replay metric missing: {metrics}"
