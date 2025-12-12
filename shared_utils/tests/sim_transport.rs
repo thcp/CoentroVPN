@@ -64,6 +64,26 @@ impl LossyConn {
     }
 }
 
+impl Drop for LossyConn {
+    fn drop(&mut self) {
+        // Best-effort flush of any buffered packets so tests don't hang or lose tail packets.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let mut pending = Vec::new();
+            pending.append(&mut self.buffer);
+            let tx = self.tx.clone();
+            handle.spawn(async move {
+                for pkt in pending.into_iter().rev() {
+                    let _ = tx.send(pkt).await;
+                }
+            });
+        } else {
+            while let Some(pkt) = self.buffer.pop() {
+                let _ = self.tx.blocking_send(pkt);
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Connection for LossyConn {
     async fn send_data(&mut self, data: &[u8]) -> Result<(), TransportError> {
