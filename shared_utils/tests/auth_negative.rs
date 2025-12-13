@@ -173,14 +173,19 @@ async fn withstands_loss_and_reorder() {
     let (mut server_conn, mut client_conn) =
         InMemoryConn::pair_with_conditions(None, None, 0.2, true);
 
-    let server = tokio::spawn(async move {
-        psk_handshake_server(&mut server_conn, || parse_psk("Y29uc2lzdGVudA==")).await
-    });
+    let result = tokio::time::timeout(Duration::from_secs(3), async move {
+        let server = tokio::spawn(async move {
+            psk_handshake_server(&mut server_conn, || parse_psk("Y29uc2lzdGVudA==")).await
+        });
 
-    let client_res = psk_handshake_client(&mut client_conn, "Y29uc2lzdGVudA==").await;
-    let server_res = server.await.expect("server task panicked");
+        let client_res = psk_handshake_client(&mut client_conn, "Y29uc2lzdGVudA==").await;
+        let server_res = server.await.expect("server task panicked");
+        (client_res, server_res)
+    })
+    .await
+    .expect("handshake under loss/reorder timed out");
 
-    match (client_res, server_res) {
+    match result {
         (Ok(_), Ok(_)) => {}
         (Err(TransportError::Protocol(_)), Err(TransportError::Protocol(_))) => {}
         other => panic!("unexpected outcome under loss/reorder: {:?}", other),
