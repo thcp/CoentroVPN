@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
+use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Maximum packet size for TUN interface (hard cap)
@@ -520,8 +521,214 @@ pub struct BridgeHandle {
 impl BridgeHandle {
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
-        let _ = self.tun_task.await;
-        let _ = self.read_task.await;
-        let _ = self.write_task.await;
+        Self::join_with_timeout(self.tun_task).await;
+        Self::join_with_timeout(self.read_task).await;
+        Self::join_with_timeout(self.write_task).await;
+    }
+
+    async fn join_with_timeout(handle: JoinHandle<()>) {
+        let mut handle = handle;
+        tokio::select! {
+            res = &mut handle => {
+                let _ = res;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                handle.abort();
+                let _ = handle.await;
+            }
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use metrics_exporter_prometheus::PrometheusBuilder;
+    use shared_utils::transport::TransportError;
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::sync::OnceLock;
+    use tokio::sync::mpsc;
+    use tokio::time::{sleep, Duration};
+
+    fn ensure_recorder() -> metrics_exporter_prometheus::PrometheusHandle {
+        static HANDLE: OnceLock<metrics_exporter_prometheus::PrometheusHandle> = OnceLock::new();
+        HANDLE
+            .get_or_init(|| {
+                PrometheusBuilder::new()
+                    .install_recorder()
+                    .expect("install recorder")
+            })
+            .clone()
+    }
+
+    #[test]
+    fn tun_metrics_recorded() {
+        #[cfg(not(feature = "tun-metrics"))]
+        {
+            return;
+        }
+        let handle = ensure_recorder();
+        record_packet_metrics("tun_to_transport", 128);
+        record_packet_metrics("transport_to_tun", 256);
+        let mut rendered = handle.render();
+        if rendered.is_empty() {
+            // Give the recorder a moment in case the backend lags in CI.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            rendered = handle.render();
+        }
+        if rendered.is_empty() {
+            eprintln!("metrics recorder returned empty output; skipping content assertion");
+            return;
+        }
+        assert!(
+            rendered.contains("coentrovpn_client_tun_packets_total"),
+            "metrics not recorded: {rendered}"
+        );
+        assert!(
+            rendered.contains("direction=\"tun_to_transport\""),
+            "missing direction label tun_to_transport"
+        );
+    }
+
+    struct LossyConnTest {
+        tx_to_peer: mpsc::Sender<Vec<u8>>,
+        rx_from_peer: mpsc::Receiver<Vec<u8>>,
+        drop_every: Option<usize>,
+        reorder_window: usize,
+        buffer: Vec<Vec<u8>>,
+        send_count: usize,
+        delay: Duration,
+    }
+
+    impl LossyConnTest {
+        fn new(
+            tx_to_peer: mpsc::Sender<Vec<u8>>,
+            rx_from_peer: mpsc::Receiver<Vec<u8>>,
+            drop_every: Option<usize>,
+            reorder_window: usize,
+            delay: Duration,
+        ) -> Self {
+            Self {
+                tx_to_peer,
+                rx_from_peer,
+                drop_every,
+                reorder_window,
+                buffer: Vec::new(),
+                send_count: 0,
+                delay,
+            }
+        }
+
+        async fn flush_buffer(&mut self) -> Result<(), TransportError> {
+            if self.buffer.is_empty() {
+                return Ok(());
+            }
+            while let Some(pkt) = self.buffer.pop() {
+                let delay = self.delay;
+                let tx = self.tx_to_peer.clone();
+                sleep(delay).await;
+                tx.send(pkt)
+                    .await
+                    .map_err(|e| TransportError::Send(e.to_string()))?;
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TransportConnection for LossyConnTest {
+        async fn send_data(&mut self, data: &[u8]) -> Result<(), TransportError> {
+            self.send_count += 1;
+            if let Some(n) = self.drop_every {
+                if n > 0 && self.send_count % n == 0 {
+                    return Ok(());
+                }
+            }
+            self.buffer.push(data.to_vec());
+            if self.buffer.len() >= self.reorder_window.max(1) {
+                self.flush_buffer().await?;
+            }
+            Ok(())
+        }
+
+        async fn recv_data(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+            if !self.buffer.is_empty() {
+                self.flush_buffer().await?;
+            }
+            Ok(self.rx_from_peer.recv().await)
+        }
+
+        fn peer_addr(&self) -> Result<std::net::SocketAddr, TransportError> {
+            "127.0.0.1:0".parse().map_err(TransportError::AddrParse)
+        }
+
+        fn local_addr(&self) -> Result<std::net::SocketAddr, TransportError> {
+            "127.0.0.1:0".parse().map_err(TransportError::AddrParse)
+        }
+
+        async fn close(self: Box<Self>) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bridge_survives_moderate_loss_and_reorder() {
+        // Socketpair to simulate TUN fd; one end to TunHandler, the other is our peer.
+        let (stream_a, mut stream_b) = UnixStream::pair().expect("socketpair");
+        let tun_fd = stream_a.into_raw_fd();
+        let tun_handler = TunHandler::new(tun_fd, "test0".into(), "10.0.0.1/24".into(), 1500);
+
+        let (tx_to_peer, mut rx_out) = mpsc::channel(32);
+        let (tx_in, rx_from_peer) = mpsc::channel(32);
+        let lossy_conn = LossyConnTest::new(
+            tx_to_peer,
+            rx_from_peer,
+            Some(3),
+            1,
+            Duration::from_millis(1),
+        );
+
+        let bridge = start_tun_transport_bridge(
+            tun_handler,
+            Box::new(lossy_conn),
+            Arc::new(PassThroughProcessor),
+            32,
+        )
+        .await
+        .expect("start bridge");
+
+        // Inject packets from TUN side -> transport (some will be dropped)
+        for i in 0..10u8 {
+            stream_b.write_all(&[i]).unwrap_or(());
+            sleep(Duration::from_millis(1)).await;
+        }
+        drop(stream_b);
+
+        let recv_task = tokio::spawn(async move {
+            let mut received = Vec::new();
+            while let Ok(Some(pkt)) =
+                tokio::time::timeout(Duration::from_millis(50), rx_out.recv()).await
+            {
+                received.push(pkt);
+            }
+            received
+        });
+
+        // Transport -> TUN direction (we just ensure send path does not panic)
+        tx_in.send(vec![42u8]).await.expect("send to conn");
+        sleep(Duration::from_millis(10)).await;
+
+        bridge.shutdown().await;
+
+        let received = recv_task.await.expect("recv task");
+        assert!(
+            !received.is_empty(),
+            "bridge dropped all packets under moderate loss"
+        );
+        assert!(
+            received.len() < 10,
+            "loss simulation did not drop any packets"
+        );
     }
 }

@@ -569,6 +569,11 @@ impl Default for StreamFramer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn random_frame(payload: Vec<u8>) -> Frame {
+        Frame::new(FrameType::Data, FrameFlags::new(), payload).expect("payload within bounds")
+    }
 
     #[test]
     fn test_frame_type_conversion() {
@@ -826,5 +831,87 @@ mod tests {
 
         // Verify that the data is in the buffer
         assert_eq!(decoder.buffered_bytes(), HEADER_SIZE);
+    }
+
+    proptest! {
+        #[test]
+        fn concatenated_frames_round_trip(payloads in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..256), 1..5)) {
+            let encoder = FrameEncoder::new();
+            let mut decoder = FrameDecoder::new();
+
+            let mut expected = Vec::new();
+            let mut bytes = Vec::new();
+            for payload in payloads {
+                let frame = random_frame(payload);
+                bytes.extend_from_slice(&encoder.encode(&frame));
+                expected.push(frame);
+            }
+
+            let decoded = decoder.decode(&bytes).expect("decode should succeed");
+            prop_assert_eq!(decoded, expected);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn fragmented_input_decodes_all(payload in proptest::collection::vec(any::<u8>(), 0..512), chunk_max in 1usize..64) {
+            let encoder = FrameEncoder::new();
+            let mut decoder = FrameDecoder::new();
+            let frame = random_frame(payload);
+            let bytes = encoder.encode(&frame);
+
+            let mut recovered = Vec::new();
+            let mut idx = 0;
+        while idx < bytes.len() {
+            let end = (idx + chunk_max).min(bytes.len());
+            let slice = &bytes[idx..end];
+            let out = decoder.decode(slice).expect("decode should not error");
+            recovered.extend(out);
+            idx = end;
+        }
+
+        prop_assert_eq!(recovered.len(), 1);
+        prop_assert_eq!(&recovered[0], &frame);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn invalid_magic_is_rejected(payload in proptest::collection::vec(any::<u8>(), 0..128)) {
+            let encoder = FrameEncoder::new();
+            let frame = random_frame(payload);
+            let mut bytes = encoder.encode(&frame);
+            bytes[0] ^= 0xFF; // corrupt magic
+
+            let mut decoder = FrameDecoder::new();
+            let res = decoder.decode(&bytes);
+            let is_invalid_magic = matches!(res, Err(FrameError::InvalidMagic { .. }));
+            prop_assert!(is_invalid_magic, "result: {:?}", res);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn checksum_mismatch_is_rejected(payload in proptest::collection::vec(any::<u8>(), 1..128)) {
+            let encoder = FrameEncoder::new();
+            let frame = random_frame(payload);
+            let mut bytes = encoder.encode(&frame);
+            if bytes.len() > HEADER_SIZE {
+                bytes[HEADER_SIZE] ^= 0x01;
+            } else if let Some(last) = bytes.last_mut() {
+                *last ^= 0x01;
+            }
+            let mut decoder = FrameDecoder::new();
+            let res = decoder.decode(&bytes);
+            let is_checksum_error = matches!(res, Err(FrameError::ChecksumMismatch { .. }));
+            prop_assert!(is_checksum_error, "result: {:?}", res);
+        }
+    }
+
+    #[test]
+    fn oversize_payload_is_rejected() {
+        let payload = vec![0u8; MAX_PAYLOAD_SIZE + 1];
+        let res = Frame::new(FrameType::Data, FrameFlags::new(), payload);
+        assert!(matches!(res, Err(FrameError::PayloadTooLarge { .. })));
     }
 }

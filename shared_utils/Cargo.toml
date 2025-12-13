@@ -61,6 +61,7 @@ insecure-tls = []
 tempfile = "3.8.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 proptest = "1.5"
+metrics-exporter-prometheus = "0.14"
 
 [lib]
 bench = false # Or true, depending on whether you want to run benchmarks for the library itself

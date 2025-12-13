@@ -18,7 +18,9 @@ fn ip_cmd(args: &[&str]) -> anyhow::Result<String> {
 #[tokio::test]
 async fn create_route_destroy_tun() -> anyhow::Result<()> {
     let mgr = create_network_manager();
-    let name = format!("coentrotest{}", std::process::id());
+    // Linux TUN device names have a small length limit (typically 15/16 chars); keep it short.
+    let pid_suffix = std::process::id() % 10_000;
+    let name = format!("cot{:04}", pid_suffix);
     let ip_cidr = "10.8.9.1/30";
 
     let tun = mgr
