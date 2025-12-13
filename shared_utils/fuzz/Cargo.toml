@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 shared_utils = { path = ".." }
+# Enable quinn-proto's arbitrary feature so fuzz builds pull in the dependency.
+quinn-proto = { version = "0.10.6", features = ["arbitrary"] }
 
 [build-dependencies]
 shared_utils = { path = ".." }
