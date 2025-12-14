@@ -8,7 +8,7 @@ mod helper_comms;
 mod tun_handler;
 
 use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use rustls::{Certificate as RustlsCertificate, PrivateKey as RustlsPrivateKey};
@@ -37,6 +37,7 @@ enum LogLevelArg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use std::env;
 
     fn reset_env() {

@@ -266,49 +266,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-    use std::env;
-
-    fn reset_env() {
-        env::remove_var("COENTRO_HELPER_SOCKET");
-        env::remove_var("COENTRO_LOG_LEVEL");
-        env::remove_var("COENTRO_JSON_LOGS");
-        env::remove_var("COENTRO_CONFIG");
-        env::remove_var("COENTRO_SOCKET_ACTIVATION");
-    }
-
-    #[test]
-    fn cli_env_socket_path_and_activation() {
-        reset_env();
-        env::set_var("COENTRO_HELPER_SOCKET", "/tmp/env.sock");
-        env::set_var("COENTRO_SOCKET_ACTIVATION", "true");
-        let args = Args::parse_from(["bin"]);
-        assert_eq!(args.socket_path.display().to_string(), "/tmp/env.sock");
-        assert!(args.socket_activation, "socket activation should honor env");
-        reset_env();
-    }
-
-    #[test]
-    fn cli_env_log_level_overridden() {
-        reset_env();
-        env::set_var("COENTRO_LOG_LEVEL", "debug");
-        // CLI should override env value
-        let args = Args::parse_from(["bin", "--log-level", "trace"]);
-        assert!(matches!(args.log_level, LogLevelArg::Trace));
-        reset_env();
-    }
-
-    #[test]
-    fn helper_help_examples_render() {
-        let mut cmd = Args::command();
-        let help = cmd.render_long_help().to_string();
-        assert!(help.contains("Examples:"), "help missing examples");
-    }
-}
-
 /// Get the socket file descriptor from launchd
 fn get_socket_from_launchd() -> anyhow::Result<RawFd> {
     // On macOS, launchd passes socket file descriptors through environment variables
@@ -449,4 +406,47 @@ fn get_socket_from_launchd() -> anyhow::Result<RawFd> {
     info!("Created socket manually with file descriptor {}", socket_fd);
 
     Ok(socket_fd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use std::env;
+
+    fn reset_env() {
+        env::remove_var("COENTRO_HELPER_SOCKET");
+        env::remove_var("COENTRO_LOG_LEVEL");
+        env::remove_var("COENTRO_JSON_LOGS");
+        env::remove_var("COENTRO_CONFIG");
+        env::remove_var("COENTRO_SOCKET_ACTIVATION");
+    }
+
+    #[test]
+    fn cli_env_socket_path_and_activation() {
+        reset_env();
+        env::set_var("COENTRO_HELPER_SOCKET", "/tmp/env.sock");
+        env::set_var("COENTRO_SOCKET_ACTIVATION", "true");
+        let args = Args::parse_from(["bin"]);
+        assert_eq!(args.socket_path.display().to_string(), "/tmp/env.sock");
+        assert!(args.socket_activation, "socket activation should honor env");
+        reset_env();
+    }
+
+    #[test]
+    fn cli_env_log_level_overridden() {
+        reset_env();
+        env::set_var("COENTRO_LOG_LEVEL", "debug");
+        // CLI should override env value
+        let args = Args::parse_from(["bin", "--log-level", "trace"]);
+        assert!(matches!(args.log_level, LogLevelArg::Trace));
+        reset_env();
+    }
+
+    #[test]
+    fn helper_help_examples_render() {
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(help.contains("Examples:"), "help missing examples");
+    }
 }
