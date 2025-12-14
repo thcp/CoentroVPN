@@ -10,7 +10,7 @@ mod ipc_handler;
 mod network_manager;
 mod sleep_monitor;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use shared_utils::config::Config;
 use shared_utils::logging::{init_logging, LogOptions};
@@ -21,28 +21,75 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum LogLevelArg {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevelArg> for tracing::Level {
+    fn from(level: LogLevelArg) -> Self {
+        match level {
+            LogLevelArg::Trace => tracing::Level::TRACE,
+            LogLevelArg::Debug => tracing::Level::DEBUG,
+            LogLevelArg::Info => tracing::Level::INFO,
+            LogLevelArg::Warn => tracing::Level::WARN,
+            LogLevelArg::Error => tracing::Level::ERROR,
+        }
+    }
+}
+
+fn default_config_path() -> PathBuf {
+    dirs::config_dir()
+        .map(|p| p.join("coentrovpn").join("config.toml"))
+        .unwrap_or_else(|| PathBuf::from("config.toml"))
+}
+
 /// Command-line arguments for the helper daemon
 #[derive(Parser, Debug)]
-#[clap(author, version, about)]
+#[clap(
+    author,
+    version,
+    about,
+    after_help = "Examples:\n  coentro_helper --json-logs --log-level debug --config ~/.config/coentrovpn/config.toml --socket-path /var/run/coentrovpn/helper.sock\n  coentro_helper --socket-activation"
+)]
 struct Args {
     /// Path to the Unix Domain Socket for IPC
-    #[clap(short, long, default_value = "/var/run/coentrovpn/helper.sock")]
+    #[clap(
+        short,
+        long,
+        env = "COENTRO_HELPER_SOCKET",
+        default_value = "/var/run/coentrovpn/helper.sock"
+    )]
     socket_path: PathBuf,
 
     /// Log level
-    #[clap(short, long, default_value = "info")]
-    log_level: String,
+    #[clap(
+        short,
+        long,
+        value_enum,
+        env = "COENTRO_LOG_LEVEL",
+        default_value = "info"
+    )]
+    log_level: LogLevelArg,
+
+    /// Emit JSON logs (structured)
+    #[clap(long, env = "COENTRO_JSON_LOGS")]
+    json_logs: bool,
 
     /// Run in foreground (don't daemonize)
     #[clap(short, long)]
     foreground: bool,
 
     /// Path to the configuration file
-    #[clap(short, long, default_value = "config.toml")]
-    config: PathBuf,
+    #[clap(short, long = "config", alias = "config-path", env = "COENTRO_CONFIG")]
+    config: Option<PathBuf>,
 
     /// Use socket activation (for launchd on macOS)
-    #[clap(long)]
+    #[clap(long, env = "COENTRO_SOCKET_ACTIVATION")]
     socket_activation: bool,
 }
 
@@ -75,17 +122,13 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    let config_path = args.config.unwrap_or_else(default_config_path);
+
     // Initialize tracing-based logging
-    let level = match args.log_level.to_lowercase().as_str() {
-        "trace" => tracing::Level::TRACE,
-        "debug" => tracing::Level::DEBUG,
-        "info" => tracing::Level::INFO,
-        "warn" => tracing::Level::WARN,
-        "error" => tracing::Level::ERROR,
-        _ => tracing::Level::INFO,
-    };
+    let level: tracing::Level = args.log_level.into();
     let _guard = init_logging(LogOptions {
         level,
+        json_format: args.json_logs,
         ..Default::default()
     });
 
@@ -107,17 +150,17 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration
     info!(
         "Attempting to load configuration from {}",
-        args.config.display()
+        config_path.display()
     );
-    let config = match Config::load(&args.config) {
+    let config = match Config::load(&config_path) {
         Ok(cfg) => {
-            info!("Loaded configuration from {}", args.config.display());
+            info!("Loaded configuration from {}", config_path.display());
             cfg
         }
         Err(e) => {
             warn!(
-                "Failed to load configuration from {}: {}",
-                args.config.display(),
+                "Failed to load configuration from {}: {} (remediation: ensure the file exists and is valid TOML)",
+                config_path.display(),
                 e
             );
             warn!("Using default configuration");
@@ -157,6 +200,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a channel for shutdown signaling
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    debug!(
+        "Effective config (precedence defaults < file < env < CLI): path={}, socket_path={}, json_logs={}, log_level={:?}, socket_activation={}",
+        config_path.display(),
+        args.socket_path.display(),
+        args.json_logs,
+        args.log_level,
+        args.socket_activation
+    );
 
     // Start the IPC handler
     let ipc_handler = ipc_handler::IpcHandler::new();
@@ -363,4 +415,52 @@ fn get_socket_from_launchd() -> anyhow::Result<RawFd> {
     info!("Created socket manually with file descriptor {}", socket_fd);
 
     Ok(socket_fd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use std::env;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn reset_env() {
+        env::remove_var("COENTRO_HELPER_SOCKET");
+        env::remove_var("COENTRO_LOG_LEVEL");
+        env::remove_var("COENTRO_JSON_LOGS");
+        env::remove_var("COENTRO_CONFIG");
+        env::remove_var("COENTRO_SOCKET_ACTIVATION");
+    }
+
+    #[test]
+    fn cli_env_socket_path_and_activation() {
+        let _lock = ENV_GUARD.lock().unwrap();
+        reset_env();
+        env::set_var("COENTRO_HELPER_SOCKET", "/tmp/env.sock");
+        env::set_var("COENTRO_SOCKET_ACTIVATION", "true");
+        let args = Args::parse_from(["bin"]);
+        assert_eq!(args.socket_path.display().to_string(), "/tmp/env.sock");
+        assert!(args.socket_activation, "socket activation should honor env");
+        reset_env();
+    }
+
+    #[test]
+    fn cli_env_log_level_overridden() {
+        let _lock = ENV_GUARD.lock().unwrap();
+        reset_env();
+        env::set_var("COENTRO_LOG_LEVEL", "debug");
+        // CLI should override env value
+        let args = Args::parse_from(["bin", "--log-level", "trace"]);
+        assert!(matches!(args.log_level, LogLevelArg::Trace));
+        reset_env();
+    }
+
+    #[test]
+    fn helper_help_examples_render() {
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(help.contains("Examples:"), "help missing examples");
+    }
 }
