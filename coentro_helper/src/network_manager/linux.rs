@@ -287,7 +287,10 @@ impl NetworkManager for LinuxNetworkManager {
                     info!("Route already exists, considering it a success");
                     Ok(())
                 } else {
-                    Err(e)
+                    Err(NetworkError::Routing(format!(
+                        "Failed to add route {} via {:?} on {}: {} (remediation: verify interface exists and permissions allow route changes)",
+                        destination, gateway, interface, e
+                    )))
                 }
             }
         }?;
@@ -331,8 +334,8 @@ impl NetworkManager for LinuxNetworkManager {
                     );
                 } else {
                     return Err(NetworkError::Routing(format!(
-                        "Failed to remove route: {}",
-                        e
+                        "Failed to remove route {} via {:?} on {}: {} (remediation: verify interface exists and route is present)",
+                        destination, gateway, interface, e
                     )));
                 }
             }
@@ -381,7 +384,7 @@ impl NetworkManager for LinuxNetworkManager {
         if self.original_dns.is_none() {
             let content = std::fs::read_to_string(&self.resolv_conf_path).map_err(|e| {
                 NetworkError::DnsConfig(format!(
-                    "Failed to read {}: {}",
+                    "Failed to read {}: {} (remediation: ensure file is readable and not locked)",
                     self.resolv_conf_path.display(),
                     e
                 ))
@@ -412,7 +415,7 @@ impl NetworkManager for LinuxNetworkManager {
         }
         std::fs::write(&self.resolv_conf_path, content).map_err(|e| {
             NetworkError::DnsConfig(format!(
-                "Failed to write {}: {}",
+                "Failed to write {}: {} (remediation: check permissions and immutability of resolv.conf)",
                 self.resolv_conf_path.display(),
                 e
             ))

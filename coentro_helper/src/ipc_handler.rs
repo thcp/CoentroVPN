@@ -374,7 +374,12 @@ impl IpcHandler {
         );
         let listener = UnixSocketListener::bind_with_auth(&socket_path, auth_config)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind to socket: {}", e))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to bind to socket: {} (remediation: ensure no other helper is running and that permissions/SELinux allow binding)",
+                    e
+                )
+            })?;
 
         // Set socket permissions to 660 (rw-rw----)
         #[cfg(unix)]

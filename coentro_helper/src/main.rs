@@ -159,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             warn!(
-                "Failed to load configuration from {}: {}",
+                "Failed to load configuration from {}: {} (remediation: ensure the file exists and is valid TOML)",
                 config_path.display(),
                 e
             );

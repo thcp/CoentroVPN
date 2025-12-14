@@ -25,13 +25,21 @@ impl HelperClient {
             Err(e) => {
                 // Check if this is an authentication error
                 if let coentro_ipc::transport::IpcError::Authentication(msg) = &e {
-                    return Err(anyhow::anyhow!("Authentication failed: {}. Make sure you are running as the same user that started the helper daemon or as root.", msg));
+                    return Err(anyhow::anyhow!(
+                        "Authentication failed: {}. Remediation: run as the same user as the helper or root, and ensure socket permissions allow connect.",
+                        msg
+                    ));
                 } else if let coentro_ipc::transport::IpcError::Connection(msg) = &e {
                     if msg.contains("Permission denied") {
-                        return Err(anyhow::anyhow!("Permission denied when connecting to helper daemon. Socket permissions may be too restrictive or you may not have the required permissions."));
+                        return Err(anyhow::anyhow!(
+                            "Permission denied connecting to helper. Remediation: check socket permissions (0660) and group membership."
+                        ));
                     }
                 }
-                return Err(anyhow::anyhow!("Failed to connect to helper daemon: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to connect to helper daemon: {}. Remediation: confirm helper is running and socket path is correct.",
+                    e
+                ));
             }
         };
 

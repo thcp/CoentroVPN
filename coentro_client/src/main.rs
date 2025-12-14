@@ -234,7 +234,11 @@ async fn main() -> anyhow::Result<()> {
             debug!("Loaded configuration from {}", config_path.display());
         }
         Err(e) => {
-            debug!("Could not load config {}: {}", config_path.display(), e);
+            debug!(
+                "Could not load config {}: {} (remediation: ensure file exists and is valid TOML)",
+                config_path.display(),
+                e
+            );
         }
     }
     debug!(

@@ -621,7 +621,10 @@ impl NetworkManager for MacOsNetworkManager {
                     destination
                 );
             } else {
-                return Err(e);
+                return Err(NetworkError::Routing(format!(
+                    "Failed to add route {} via {:?} on {}: {} (remediation: verify interface exists and permissions allow route changes)",
+                    destination, gateway, interface, e
+                )));
             }
         }
 
@@ -709,7 +712,10 @@ impl NetworkManager for MacOsNetworkManager {
             {
                 info!("Route {} already absent; treating as success", destination);
             } else {
-                return Err(e);
+                return Err(NetworkError::Routing(format!(
+                    "Failed to remove route {} via {:?} on {}: {} (remediation: verify interface exists and route is present)",
+                    destination, gateway, interface, e
+                )));
             }
         }
 
@@ -772,7 +778,12 @@ impl NetworkManager for MacOsNetworkManager {
                 (*this).original_dns = Some(original);
             }
         }
-        self.write_dns_config(servers)?;
+        self.write_dns_config(servers).map_err(|e| {
+            NetworkError::DnsConfig(format!(
+                "Failed to write resolv.conf fallback: {} (remediation: check permissions/immutability)",
+                e
+            ))
+        })?;
         let _ = Command::new("dscacheutil").args(["-flushcache"]).output();
         Ok(())
     }
