@@ -413,6 +413,9 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use std::env;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn reset_env() {
         env::remove_var("COENTRO_HELPER_SOCKET");
@@ -424,6 +427,7 @@ mod tests {
 
     #[test]
     fn cli_env_socket_path_and_activation() {
+        let _lock = ENV_GUARD.lock().unwrap();
         reset_env();
         env::set_var("COENTRO_HELPER_SOCKET", "/tmp/env.sock");
         env::set_var("COENTRO_SOCKET_ACTIVATION", "true");
@@ -435,6 +439,7 @@ mod tests {
 
     #[test]
     fn cli_env_log_level_overridden() {
+        let _lock = ENV_GUARD.lock().unwrap();
         reset_env();
         env::set_var("COENTRO_LOG_LEVEL", "debug");
         // CLI should override env value

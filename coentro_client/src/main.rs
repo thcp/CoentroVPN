@@ -39,6 +39,9 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use std::env;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn reset_env() {
         env::remove_var("COENTRO_LOG_LEVEL");
@@ -48,6 +51,7 @@ mod tests {
 
     #[test]
     fn cli_env_precedence_log_level() {
+        let _lock = ENV_GUARD.lock().unwrap();
         reset_env();
         env::set_var("COENTRO_LOG_LEVEL", "debug");
         // CLI wins over env
@@ -58,6 +62,7 @@ mod tests {
 
     #[test]
     fn cli_env_config_path() {
+        let _lock = ENV_GUARD.lock().unwrap();
         reset_env();
         env::set_var("COENTRO_CONFIG", "/tmp/env-config.toml");
         let args = Args::parse_from(["bin", "teardown-tunnel"]);
