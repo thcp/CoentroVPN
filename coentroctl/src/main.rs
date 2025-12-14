@@ -219,3 +219,52 @@ async fn main() -> Result<()> {
     info!("coentroctl command completed");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn help_renders_with_examples() {
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(
+            help.contains("Examples:"),
+            "help output should include examples for quick start"
+        );
+    }
+
+    #[test]
+    fn parses_status_default_output() {
+        let args = Args::parse_from(["bin", "status"]);
+        match args.command {
+            Command::Status => {}
+            _ => panic!("expected status subcommand"),
+        }
+        assert!(matches!(args.output, OutputFormat::Table));
+    }
+
+    #[test]
+    fn parses_tunnel_up_with_json_output() {
+        let args = Args::parse_from([
+            "bin",
+            "--output",
+            "json",
+            "tunnel",
+            "up",
+            "--server",
+            "vpn.example.com:4433",
+        ]);
+        assert!(matches!(args.output, OutputFormat::Json));
+        match args.command {
+            Command::Tunnel { action } => match action {
+                TunnelCmd::Up { server } => {
+                    assert_eq!(server.as_deref(), Some("vpn.example.com:4433"));
+                }
+                _ => panic!("expected tunnel up action"),
+            },
+            _ => panic!("expected tunnel subcommand"),
+        }
+    }
+}
