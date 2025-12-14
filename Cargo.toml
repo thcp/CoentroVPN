@@ -10,5 +10,6 @@ members = [
     "coentro_ipc",
     "coentro_helper",
     "coentro_client",
-    "coentro_server_helper"
+    "coentro_server_helper",
+    "coentroctl"
 ]
