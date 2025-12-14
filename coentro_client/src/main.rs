@@ -8,11 +8,12 @@ mod helper_comms;
 mod tun_handler;
 
 use crate::tun_handler::{start_tun_transport_bridge, PassThroughProcessor, TunHandler};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use rustls::{Certificate as RustlsCertificate, PrivateKey as RustlsPrivateKey};
 use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
+use shared_utils::config::Config;
 use shared_utils::logging::{init_logging, LogOptions};
 use shared_utils::quic::configure_client_tls_with_roots_and_identity;
 use shared_utils::transport::ClientTransport;
@@ -24,17 +25,101 @@ use std::sync::Arc;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum LogLevelArg {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn reset_env() {
+        env::remove_var("COENTRO_LOG_LEVEL");
+        env::remove_var("COENTRO_JSON_LOGS");
+        env::remove_var("COENTRO_CONFIG");
+    }
+
+    #[test]
+    fn cli_env_precedence_log_level() {
+        reset_env();
+        env::set_var("COENTRO_LOG_LEVEL", "debug");
+        // CLI wins over env
+        let args = Args::parse_from(["bin", "--log-level", "error", "teardown-tunnel"]);
+        assert!(matches!(args.log_level, LogLevelArg::Error));
+        reset_env();
+    }
+
+    #[test]
+    fn cli_env_config_path() {
+        reset_env();
+        env::set_var("COENTRO_CONFIG", "/tmp/env-config.toml");
+        let args = Args::parse_from(["bin", "teardown-tunnel"]);
+        assert_eq!(
+            args.config.as_ref().unwrap().display().to_string(),
+            "/tmp/env-config.toml"
+        );
+        reset_env();
+    }
+
+    #[test]
+    fn help_examples_render() {
+        // Ensure clap can render help without panicking (sanity for after_help content)
+        let mut cmd = Args::command();
+        let help = cmd.render_long_help().to_string();
+        assert!(help.contains("Examples:"), "help missing examples");
+    }
+}
+
+impl From<LogLevelArg> for tracing::Level {
+    fn from(level: LogLevelArg) -> Self {
+        match level {
+            LogLevelArg::Trace => tracing::Level::TRACE,
+            LogLevelArg::Debug => tracing::Level::DEBUG,
+            LogLevelArg::Info => tracing::Level::INFO,
+            LogLevelArg::Warn => tracing::Level::WARN,
+            LogLevelArg::Error => tracing::Level::ERROR,
+        }
+    }
+}
+
+fn default_config_path() -> PathBuf {
+    dirs::config_dir()
+        .map(|p| p.join("coentrovpn").join("config.toml"))
+        .unwrap_or_else(|| PathBuf::from("config.toml"))
+}
+
 /// Command-line arguments for the client
 #[derive(Parser, Debug)]
-#[clap(author, version, about)]
+#[clap(
+    author,
+    version,
+    about,
+    after_help = "Examples:\n  coentro_client --json-logs --log-level debug --config ~/.config/coentrovpn/config.toml setup-tunnel --server vpn.example.com:4433 --ip 10.0.0.2/24 --routes 10.10.0.0/16 --dns 1.1.1.1 --psk deadbeef\n  coentro_client --helper-socket /var/run/coentrovpn/helper.sock teardown-tunnel"
+)]
 struct Args {
     /// Path to the Unix Domain Socket for IPC with the helper daemon
     #[clap(short = 's', long, default_value = "/var/run/coentrovpn/helper.sock")]
     helper_socket: PathBuf,
 
     /// Log level
-    #[clap(short, long, default_value = "info")]
-    log_level: String,
+    #[clap(
+        short,
+        long,
+        value_enum,
+        env = "COENTRO_LOG_LEVEL",
+        default_value = "info"
+    )]
+    log_level: LogLevelArg,
+
+    /// Emit JSON logs (structured)
+    #[clap(long, env = "COENTRO_JSON_LOGS")]
+    json_logs: bool,
 
     /// Run a simple ping test to the helper daemon
     #[clap(long)]
@@ -47,6 +132,10 @@ struct Args {
     /// Prometheus listen address (only used when metrics_enabled=true)
     #[clap(long, default_value = "127.0.0.1:9201")]
     metrics_listen: String,
+
+    /// Path to the configuration file
+    #[clap(long = "config", alias = "config-path", env = "COENTRO_CONFIG")]
+    config: Option<PathBuf>,
 
     /// Subcommand to execute
     #[clap(subcommand)]
@@ -115,6 +204,10 @@ enum Command {
         /// Routes to exclude (comma-separated CIDRs)
         #[clap(long, value_delimiter = ',')]
         exclude_routes: Option<Vec<String>>,
+
+        /// Verify server TLS certificate (disable for local/dev only)
+        #[clap(long, default_value_t = true)]
+        verify_tls: bool,
     },
 
     /// Tear down an active VPN tunnel
@@ -127,17 +220,23 @@ async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
 
+    let config_path = args.config.unwrap_or_else(default_config_path);
+
+    // Load configuration (debug only for now; future: merge with CLI/env)
+    match Config::load(&config_path) {
+        Ok(_) => {
+            debug!("Loaded configuration from {}", config_path.display());
+        }
+        Err(e) => {
+            debug!("Could not load config {}: {}", config_path.display(), e);
+        }
+    }
+
     // Initialize tracing-based logging
-    let level = match args.log_level.to_lowercase().as_str() {
-        "trace" => tracing::Level::TRACE,
-        "debug" => tracing::Level::DEBUG,
-        "info" => tracing::Level::INFO,
-        "warn" => tracing::Level::WARN,
-        "error" => tracing::Level::ERROR,
-        _ => tracing::Level::INFO,
-    };
+    let level: tracing::Level = args.log_level.into();
     let _guard = init_logging(LogOptions {
         level,
+        json_format: args.json_logs,
         ..Default::default()
     });
 
@@ -200,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
             no_wait,
             split_default,
             route_mode,
+            verify_tls,
             include_routes,
             exclude_routes,
         }) => {
@@ -303,7 +403,7 @@ async fn main() -> anyhow::Result<()> {
                 let tls_config = configure_client_tls_with_roots_and_identity(
                     pinned_roots,
                     client_identity,
-                    true,
+                    verify_tls,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to build TLS config: {e}"))?;
 
