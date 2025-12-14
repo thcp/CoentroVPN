@@ -106,7 +106,7 @@ fn default_config_path() -> PathBuf {
     author,
     version,
     about,
-    after_help = "Examples:\n  coentro_client --json-logs --log-level debug --config ~/.config/coentrovpn/config.toml setup-tunnel --server vpn.example.com:4433 --ip 10.0.0.2/24 --routes 10.10.0.0/16 --dns 1.1.1.1 --psk deadbeef\n  coentro_client --helper-socket /var/run/coentrovpn/helper.sock teardown-tunnel"
+    after_help = "Examples:\n  # Local test tunnel (QUIC to localhost)\n  coentro_client --json-logs --log-level debug setup-tunnel --server 127.0.0.1:4433 --ip 10.0.0.2/24 --routes 10.10.0.0/16 --dns 1.1.1.1 --psk deadbeef\n\n  # Pinned CA connect\n  coentro_client setup-tunnel --server vpn.example.com:4433 --ca /etc/ssl/certs/coentro-ca.pem --verify-tls true --psk deadbeef\n\n  # Split-route + DNS apply\n  coentro_client setup-tunnel --server vpn.example.com:4433 --split-default --dns 1.1.1.1,9.9.9.9 --psk deadbeef\n\n  # Teardown\n  coentro_client teardown-tunnel"
 )]
 struct Args {
     /// Path to the Unix Domain Socket for IPC with the helper daemon
