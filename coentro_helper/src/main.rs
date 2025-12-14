@@ -201,6 +201,15 @@ async fn main() -> anyhow::Result<()> {
     // Create a channel for shutdown signaling
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
+    debug!(
+        "Effective config (precedence defaults < file < env < CLI): path={}, socket_path={}, json_logs={}, log_level={:?}, socket_activation={}",
+        config_path.display(),
+        args.socket_path.display(),
+        args.json_logs,
+        args.log_level,
+        args.socket_activation
+    );
+
     // Start the IPC handler
     let ipc_handler = ipc_handler::IpcHandler::new();
 

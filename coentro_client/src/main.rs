@@ -237,6 +237,13 @@ async fn main() -> anyhow::Result<()> {
             debug!("Could not load config {}: {}", config_path.display(), e);
         }
     }
+    debug!(
+        "Effective config (precedence defaults < file < env < CLI): path={}, helper_socket={}, json_logs={}, log_level={:?}",
+        config_path.display(),
+        args.helper_socket.display(),
+        args.json_logs,
+        args.log_level
+    );
 
     // Initialize tracing-based logging
     let level: tracing::Level = args.log_level.into();
